@@ -2,9 +2,13 @@ plugins {
     id 'java-library'
     id 'org.springframework.boot'
     alias(libs.plugins.jib)
+    alias(libs.plugins.vaadin)
 }
 
 dependencies {
+    implementation platform(libs.bom.vaadin)
+    implementation libs.vaadin.spring.boot.starter
+
     implementation project(':base')
     implementation project(':providers:anthropic')
     implementation project(':providers:google')
@@ -25,6 +29,9 @@ dependencies {
     implementation(libs.pebble.spring.starter)
 
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
+    // Vaadin refuses to start in development mode without its dev server. Scoped to
+    // developmentOnly so it never reaches a production image.
+    developmentOnly 'com.vaadin:vaadin-dev'
     runtimeOnly 'com.h2database:h2'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

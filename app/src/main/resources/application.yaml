@@ -19,6 +19,17 @@ management:
     restart:
       enabled: true
 
+vaadin:
+  # Vaadin must not share a URL space with the existing Spring MVC pages. Left at the default /*,
+  # its bootstrap request goes to the context root, where IndexController answers 302 -> /chat; the
+  # client receives an htmx page instead of its init payload and reports "Connection lost" on every
+  # route. Confining Vaadin to /ui/* keeps both UIs alive side by side during the migration.
+  url-mapping: /ui/*
+  # Without this Vaadin scans the whole classpath for routes and annotations, which measured 13.3s
+  # of the startup on this project. Restricting the scan to our own packages is the fix Vaadin's own
+  # startup warning recommends.
+  allowed-packages: ai.javaclaw
+
 pebble:
   suffix: .html.peb
 agent:

@@ -37,6 +37,15 @@ out/
 ### VS Code ###
 .vscode/
 
+# Generated or updated by the Vaadin Gradle plugin. index.html, tsconfig.json and types.d.ts are
+# deliberately NOT ignored: Vaadin regenerates them only when missing, so once customised they
+# belong in source control.
+node_modules/
+**/src/main/frontend/generated/
+vite.generated.ts
+pnpmfile.js
+.npmrc
+
 mcp/*
 workspace/
 !workspace/INFO.md
@@ -44,3 +53,6 @@ workspace/
 !workspace/AGENT.md
 !workspace/skills/skill-creator
 *.private*
+
+# Screenshots and logs from the UI review loops
+.ui-shots/

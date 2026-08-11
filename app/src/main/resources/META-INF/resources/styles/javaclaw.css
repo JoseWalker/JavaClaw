@@ -1,0 +1,1975 @@
+/*
+ * JavaClaw UI design system.
+ *
+ * Served as a static resource from META-INF/resources and loaded with @StyleSheet, so it never
+ * enters the frontend bundle and never triggers a Node build. Every colour below is a custom
+ * property declared once with light-dark(), so light and dark are one token table selected by the
+ * used color-scheme rather than two parallel sets of rules.
+ *
+ * Because color-scheme is inherited and Vaadin's own Lumo tokens are themselves declared with
+ * light-dark(), flipping color-scheme on the root element re-themes the built-in components inside
+ * their shadow roots as well - without a single shadow-piercing selector and without a build step.
+ *
+ * Theme selection, in priority order:
+ *   1. html[theme~="light"] / html[theme~="dark"]  - an explicit choice, set by the theme toggle
+ *      and persisted for the session (see ThemePreference).
+ *   2. prefers-color-scheme                        - the first visit, before any choice is made.
+ *   3. light                                       - the fallback.
+ *
+ * Motion follows one rule throughout: anything that paints a themed colour transitions on
+ * --jc-transition-theme, so a theme flip lands on every surface at the same moment; motion and
+ * elevation (transform, box-shadow) transition on --jc-transition-fast, because that is what the
+ * eye reads as interaction feel. Mixing the two on one property is what makes a flip desync.
+ *
+ * The palette is JavaClaw's own: warm neutrals around a copper accent. Density, rhythm and type
+ * scale are held to the bar set by best-in-class chat UIs, but no value is borrowed from one.
+ */
+
+/* ==========================================================================
+ * 1. Theme selection
+ * ========================================================================== */
+
+:root {
+    /* Default before any explicit choice and before the media query below is evaluated. */
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    /* First visit on a dark desktop. An explicit "light" choice must still win, hence the :not(). */
+    :root:not([theme~="light"]) {
+        color-scheme: dark;
+    }
+}
+
+/* An explicit choice. Same specificity as the media rule above but declared later, so it wins. */
+:root[theme~="dark"] {
+    color-scheme: dark;
+}
+
+:root[theme~="light"] {
+    color-scheme: light;
+}
+
+/* ==========================================================================
+ * 2. Token table
+ * ========================================================================== */
+
+:root {
+    /* --- Surfaces ------------------------------------------------------- */
+    --jc-surface: light-dark(#fbfaf9, #16151a);
+    --jc-surface-raised: light-dark(#ffffff, #201f26);
+    /*
+     * Recessed tone. Carries the chrome bars (header, composer band), so they read as a frame
+     * around the transcript instead of the same sheet of paper with a hairline drawn on it.
+     */
+    --jc-surface-sunken: light-dark(#f1efec, #100f14);
+
+    --jc-border: light-dark(#e7e3dd, #2e2c36);
+    --jc-border-strong: light-dark(#d4cec6, #413e4b);
+
+    /* --- Text ----------------------------------------------------------- */
+    --jc-text: light-dark(#1b1a1e, #ece9e6);
+    --jc-text-muted: light-dark(#6a655f, #a29c96);
+    /*
+     * The dimmest text the UI is allowed to paint. Measured against every ground it lands on:
+     * 5.26:1 on --jc-surface, 5.48:1 on --jc-surface-raised, 4.77:1 on --jc-surface-sunken in
+     * light; 5.15:1 / 4.63:1 / 5.41:1 in dark. It is reserved for the input placeholder - anything
+     * a reader has to read (hints, labels) uses --jc-text-muted, which clears AA with room to
+     * spare at 12px.
+     */
+    --jc-text-faint: light-dark(#6f6862, #8c8694);
+
+    /* --- Accent --------------------------------------------------------- */
+    --jc-accent: light-dark(#a44c08, #e6924f);
+    --jc-accent-hover: light-dark(#8a3f05, #f2a76c);
+    --jc-accent-active: light-dark(#733404, #d98240);
+    --jc-accent-contrast: light-dark(#ffffff, #1a1410);
+    /*
+     * Derived from the accent rather than hand-picked per theme, so the user turn carries the same
+     * amount of brand in both. Hand-picked dark values drifted to 1.16:1 against the page ground,
+     * which made the tint vanish; mixing against --jc-surface-raised holds it at 1.66:1 over the
+     * ground and 1.49:1 over the raised tone in dark, and 1.33:1 / 1.38:1 in light.
+     */
+    --jc-accent-soft: color-mix(in srgb, var(--jc-accent) 22%, var(--jc-surface-raised));
+    --jc-accent-line: color-mix(in srgb, var(--jc-accent) 32%, var(--jc-surface-raised));
+
+    /*
+     * Brand mark fill. Light is the accent as-is. Dark deepens it: at full saturation the mark is
+     * the brightest object on the page and outweighs the product name it sits beside.
+     */
+    --jc-mark-surface: light-dark(#a44c08, #c9773c);
+
+    --jc-danger: light-dark(#a52220, #f0a8a4);
+
+    /* --- Elevation ------------------------------------------------------ */
+    --jc-shadow-xs: 0 1px 2px light-dark(rgba(28, 22, 16, 0.06), rgba(0, 0, 0, 0.4));
+    --jc-shadow-s: 0 1px 2px light-dark(rgba(28, 22, 16, 0.05), rgba(0, 0, 0, 0.35)),
+                   0 4px 12px light-dark(rgba(28, 22, 16, 0.06), rgba(0, 0, 0, 0.32));
+    /* Consumer: the composer shell while it holds focus - the one element that lifts off the page. */
+    --jc-shadow-m: 0 2px 4px light-dark(rgba(28, 22, 16, 0.05), rgba(0, 0, 0, 0.4)),
+                   0 12px 28px light-dark(rgba(28, 22, 16, 0.09), rgba(0, 0, 0, 0.45));
+
+    /* --- Focus ---------------------------------------------------------- */
+    --jc-focus-ring-width: 2px;
+    --jc-focus-ring-color: var(--jc-accent);
+    --jc-focus-ring-halo: color-mix(in srgb, var(--jc-accent) 22%, transparent);
+
+    /* --- Type ----------------------------------------------------------- */
+    --jc-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+                    Arial, "Noto Sans", sans-serif;
+    --jc-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                    "Liberation Mono", monospace;
+
+    /* Type scale: 1.125 minor third, anchored at 15px so long transcripts stay comfortable. */
+    --jc-font-size-xs: 0.75rem;
+    --jc-font-size-s: 0.8125rem;
+    --jc-font-size-m: 0.9375rem;
+    --jc-font-size-l: 1.0625rem;
+    --jc-font-size-xl: 1.25rem;
+
+    --jc-font-weight-regular: 400;
+    --jc-font-weight-medium: 550;
+    --jc-font-weight-strong: 650;
+
+    --jc-line-height-tight: 1.3;
+    --jc-line-height-body: 1.65;
+
+    --jc-tracking-tight: -0.011em;
+    --jc-tracking-wide: 0.06em;
+
+    /* --- Spacing: 4px base, so every gap is a multiple and vertical rhythm stays even. --- */
+    --jc-space-3xs: 0.125rem;
+    --jc-space-2xs: 0.25rem;
+    --jc-space-xs: 0.5rem;
+    --jc-space-s: 0.75rem;
+    --jc-space-m: 1rem;
+    --jc-space-l: 1.5rem;
+    --jc-space-xl: 2rem;
+    --jc-space-2xl: 3rem;
+
+    /*
+     * Two gaps, not one: a question and its own answer are one exchange and are set closer than
+     * two exchanges are to each other, so the transcript groups without needing a box around it.
+     */
+    --jc-turn-gap: var(--jc-space-m);
+    --jc-exchange-gap: var(--jc-space-l);
+
+    /* --- Radius --------------------------------------------------------- */
+    --jc-radius-s: 6px;
+    --jc-radius-m: 10px;
+    --jc-radius-l: 16px;
+    --jc-radius-pill: 999px;
+
+    /* --- Motion --------------------------------------------------------- */
+    --jc-transition-fast: 120ms cubic-bezier(0.2, 0, 0.2, 1);
+    --jc-transition-theme: 260ms ease;
+
+    /* --- Layout --------------------------------------------------------- */
+    --jc-measure: 46rem;
+    --jc-header-height: 3.25rem;
+}
+
+/*
+ * Reduced motion is honoured by zeroing the duration tokens rather than by disabling individual
+ * rules, so any transition added later inherits the behaviour for free.
+ */
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --jc-transition-fast: 0ms;
+        --jc-transition-theme: 0ms;
+    }
+}
+
+/* ==========================================================================
+ * 3. Bridge to Vaadin's tokens
+ *
+ * Vaadin components read these inheritable custom properties from inside their shadow roots, so
+ * mapping them here themes the built-in components without piercing shadow DOM and without a
+ * frontend build.
+ * ========================================================================== */
+
+:root {
+    --lumo-font-family: var(--jc-font-sans);
+    --lumo-base-color: var(--jc-surface-raised);
+    --lumo-body-text-color: var(--jc-text);
+    --lumo-secondary-text-color: var(--jc-text-muted);
+    --lumo-tertiary-text-color: var(--jc-text-faint);
+    --lumo-disabled-text-color: var(--jc-text-faint);
+    --lumo-primary-color: var(--jc-accent);
+    --lumo-primary-text-color: var(--jc-accent);
+    --lumo-primary-contrast-color: var(--jc-accent-contrast);
+    --lumo-error-color: var(--jc-danger);
+    --lumo-error-text-color: var(--jc-danger);
+
+    --lumo-border-radius-s: var(--jc-radius-s);
+    --lumo-border-radius-m: var(--jc-radius-m);
+    --lumo-border-radius-l: var(--jc-radius-l);
+
+    --vaadin-focus-ring-color: var(--jc-focus-ring-color);
+    --vaadin-focus-ring-width: var(--jc-focus-ring-width);
+}
+
+/* ==========================================================================
+ * 4. Page framing and shared primitives
+ * ========================================================================== */
+
+body {
+    margin: 0;
+    background: var(--jc-surface);
+    color: var(--jc-text);
+    font-family: var(--jc-font-sans);
+    font-size: var(--jc-font-size-m);
+    font-weight: var(--jc-font-weight-regular);
+    line-height: var(--jc-line-height-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    transition: background-color var(--jc-transition-theme), color var(--jc-transition-theme);
+}
+
+::selection {
+    background: color-mix(in srgb, var(--jc-accent) 24%, transparent);
+}
+
+.jc-app {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: var(--jc-surface);
+    transition: background-color var(--jc-transition-theme);
+}
+
+/* A single shared measure keeps the header, the transcript and the composer on one optical axis. */
+.jc-measure {
+    width: 100%;
+    max-width: var(--jc-measure);
+    margin-inline: auto;
+    padding-inline: var(--jc-space-l);
+    box-sizing: border-box;
+}
+
+/*
+ * Text for assistive technology only. The transcript distinguishes the two speakers by alignment,
+ * tint and the assistant's mark; a screen reader gets none of that, so each turn still carries its
+ * role as text - just not as 20px of chrome above every message.
+ */
+.jc-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+/*
+ * One brand mark, two sizes. Fill, ink and letterform are fixed here so the logo cannot render two
+ * different ways on one screen; modifiers vary nothing but size and radius.
+ */
+.jc-mark {
+    flex: 0 0 auto;
+    display: grid;
+    place-items: center;
+    background: var(--jc-mark-surface);
+    color: var(--jc-accent-contrast);
+    font-weight: var(--jc-font-weight-strong);
+    letter-spacing: var(--jc-tracking-wide);
+    /* Compensates the trailing letter-space so the glyphs sit optically centred in the square. */
+    text-indent: var(--jc-tracking-wide);
+    user-select: none;
+    transition: background-color var(--jc-transition-theme), color var(--jc-transition-theme);
+}
+
+.jc-mark--s {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: var(--jc-radius-s);
+    font-size: var(--jc-font-size-xs);
+}
+
+.jc-mark--l {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: var(--jc-radius-m);
+    font-size: var(--jc-font-size-s);
+}
+
+/* ==========================================================================
+ * 5. Application shell
+ *
+ * One column of navigation, one region of content, and a single piece of state between them.
+ *
+ * The three viewports are three arrangements of the same DOM, not three components. The sidebar is
+ * always fixed to the inline start and always slides on a transform; what changes with width is
+ * whether the content is pushed aside to make room for it (desktop, tablet) or covered by it
+ * (phone), and whether it is showing before anyone asks (desktop only).
+ *
+ * State is expressed as the absence or presence of data-sidebar on .jc-shell:
+ *
+ *   absent            the reader has not chosen; this stylesheet decides per breakpoint. This is
+ *                     what makes the first paint correct - the server has not heard the viewport
+ *                     width yet and must not guess.
+ *   [data-sidebar]    an explicit choice, written by MainLayout, overriding the default until the
+ *                     window crosses a breakpoint.
+ *
+ * The breakpoints below are mirrored in LayoutMode.java, which needs them to know which way the
+ * toggle flips. Change the two together.
+ * ========================================================================== */
+
+.jc-shell {
+    --jc-sidebar-width: 17.5rem;
+    /*
+     * Drawer motion is slower than the interaction easing used elsewhere and decelerates hard: a
+     * whole column arriving is a change of place, and at 120ms it reads as a flicker rather than as
+     * something that moved.
+     */
+    --jc-drawer-transition: 260ms cubic-bezier(0.32, 0.72, 0, 1);
+
+    height: 100dvh;
+    overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .jc-shell {
+        --jc-drawer-transition: 0ms;
+    }
+}
+
+/* --- The navigation column ---------------------------------------------- */
+
+/*
+ * Fixed rather than a flex sibling, so the same element can be an in-flow column on a desktop and a
+ * drawer over the content on a phone without moving in the DOM. The content region is what makes
+ * room for it, by margin.
+ */
+.jc-sidebar {
+    position: fixed;
+    z-index: 30;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: var(--jc-sidebar-width);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    background: var(--jc-surface-sunken);
+    border-inline-end: 1px solid var(--jc-border-strong);
+
+    /*
+     * Closed is the base state and every breakpoint below opts back into open. visibility is
+     * switched alongside the transform, delayed until the slide finishes, because a column parked
+     * off-screen is still in the tab order - a reader tabbing through the composer would otherwise
+     * land in a conversation list they cannot see.
+     */
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform var(--jc-drawer-transition),
+                visibility 0s linear var(--jc-drawer-transition),
+                background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+/*
+ * The rule under the brand is the same rule as the one under the top bar: both bands are
+ * var(--jc-header-height) tall and both carry a 1px --jc-border edge, so the line crosses the
+ * sidebar divider without a step. It is the only horizontal rule in the shell, which is what keeps
+ * it from reading as half a frame - see the composer, which is separated by tone and a fade instead.
+ */
+.jc-sidebar__head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    min-height: var(--jc-header-height);
+    padding-inline: var(--jc-space-s) var(--jc-space-xs);
+    border-bottom: 1px solid var(--jc-border);
+    transition: border-color var(--jc-transition-theme);
+}
+
+.jc-sidebar__brand {
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    min-width: 0;
+}
+
+.jc-brand__name {
+    font-size: var(--jc-font-size-m);
+    font-weight: var(--jc-font-weight-medium);
+    letter-spacing: var(--jc-tracking-tight);
+    color: var(--jc-text);
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-sidebar__collapse {
+    margin-inline-start: auto;
+}
+
+/* --- New chat and search ------------------------------------------------- */
+
+.jc-sidebar__tools {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-xs);
+    padding: var(--jc-space-s);
+}
+
+/*
+ * The one raised control in the column. It is not the accent fill: the accent belongs to the send
+ * button, which is the action the whole page is built around, and two full-saturation primaries on
+ * one screen means neither is primary.
+ */
+.jc-new-chat {
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: var(--jc-space-xs) var(--jc-space-s);
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    letter-spacing: var(--jc-tracking-tight);
+    color: var(--jc-text);
+    text-align: start;
+    background: var(--jc-surface-raised);
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-m);
+    box-shadow: var(--jc-shadow-xs);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-fast),
+                box-shadow var(--jc-transition-fast),
+                transform var(--jc-transition-fast),
+                color var(--jc-transition-theme);
+}
+
+.jc-new-chat .jc-glyph.jc-glyph {
+    color: var(--jc-accent);
+}
+
+.jc-new-chat:hover {
+    border-color: var(--jc-border-strong);
+    box-shadow: var(--jc-shadow-s);
+}
+
+.jc-new-chat:active {
+    transform: translateY(1px);
+    box-shadow: none;
+    border-color: var(--jc-accent-line);
+}
+
+.jc-search {
+    width: 100%;
+    padding: 0;
+    --vaadin-input-field-background: var(--jc-surface);
+    --vaadin-input-field-border-width: 1px;
+    --vaadin-input-field-border-color: var(--jc-border);
+    --vaadin-input-field-border-radius: var(--jc-radius-m);
+    --vaadin-input-field-height: 2rem;
+    --vaadin-input-field-hover-highlight-opacity: 0;
+    --vaadin-input-field-value-color: var(--jc-text);
+    --vaadin-input-field-value-font-size: var(--jc-font-size-s);
+    --vaadin-input-field-placeholder-color: var(--jc-text-faint);
+}
+
+.jc-search:hover {
+    --vaadin-input-field-border-color: var(--jc-border-strong);
+}
+
+.jc-search[focused] {
+    --vaadin-input-field-border-color: var(--jc-accent);
+}
+
+.jc-search > .jc-glyph {
+    flex: 0 0 auto;
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--jc-text-faint);
+}
+
+/* --- The list ------------------------------------------------------------ */
+
+/*
+ * One gutter for the whole column. The scroller, the tools above it and the user menu below it all
+ * inset by var(--jc-space-s), so a conversation row's hover chip lands on exactly the same two edges
+ * as the New chat button directly above it rather than jutting past it by a few pixels.
+ */
+.jc-sidebar__scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-inline: var(--jc-space-s);
+    padding-block-end: var(--jc-space-s);
+    scrollbar-width: thin;
+    scrollbar-color: var(--jc-border-strong) transparent;
+}
+
+.jc-sidebar__list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-2xs);
+}
+
+.jc-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.jc-group + .jc-group {
+    margin-top: var(--jc-space-xs);
+}
+
+/*
+ * A folder heading is also its own control. It is typeset as a label rather than as a button
+ * because it is the quietest thing in the column; the chevron and the hover tint are what say it
+ * can be pressed.
+ *
+ * Its inset, its gap and its glyph size are the same as a conversation row's and the same as the
+ * New chat button's, so every label in the column - the action, the folder names and the
+ * conversations filed under them - starts on one x. A 4px stagger between a folder and its own
+ * children is not a hierarchy, it is a miss; hierarchy here is carried by case and colour.
+ */
+.jc-group__head {
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-s);
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--jc-font-size-xs);
+    font-weight: var(--jc-font-weight-strong);
+    letter-spacing: var(--jc-tracking-wide);
+    text-transform: uppercase;
+    color: var(--jc-text-faint);
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    transition: color var(--jc-transition-fast), background-color var(--jc-transition-fast);
+}
+
+.jc-group__head:hover {
+    color: var(--jc-text-muted);
+    background: color-mix(in srgb, var(--jc-border) 45%, transparent);
+}
+
+.jc-glyph.jc-group__chevron {
+    flex: 0 0 auto;
+    transition: transform var(--jc-transition-fast);
+}
+
+.jc-group[data-collapsed="true"] .jc-glyph.jc-group__chevron {
+    transform: rotate(-90deg);
+}
+
+.jc-group__label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.jc-group__count {
+    margin-inline-start: auto;
+    font-weight: var(--jc-font-weight-regular);
+    letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
+}
+
+.jc-group__items {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.jc-group[data-collapsed="true"] .jc-group__items {
+    display: none;
+}
+
+/* --- A conversation ------------------------------------------------------ */
+
+.jc-conv {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-s);
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    line-height: 1.9;
+    color: var(--jc-text-muted);
+    text-align: start;
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), color var(--jc-transition-fast);
+}
+
+.jc-glyph.jc-conv__mark {
+    flex: 0 0 auto;
+    color: var(--jc-text-faint);
+    transition: color var(--jc-transition-fast);
+}
+
+.jc-conv__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.jc-conv__time {
+    flex: 0 0 auto;
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text-faint);
+    font-variant-numeric: tabular-nums;
+    transition: color var(--jc-transition-fast);
+}
+
+.jc-conv:hover {
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+}
+
+.jc-conv:hover .jc-glyph.jc-conv__mark {
+    color: var(--jc-text-muted);
+}
+
+.jc-conv:active {
+    background: var(--jc-border);
+}
+
+/*
+ * The current row, marked the way the transcript marks the current turn: a tinted ground and an
+ * accent rail, not a heavier weight - re-weighting the type reflows the row and makes the list
+ * twitch as the selection moves.
+ */
+.jc-conv[aria-current="true"] {
+    background: var(--jc-accent-soft);
+    color: var(--jc-text);
+}
+
+/* Held inside the chip's straight edge, so a 10px corner radius cannot clip the rail's ends. */
+.jc-conv[aria-current="true"]::before {
+    content: "";
+    position: absolute;
+    inset-block: 30%;
+    inset-inline-start: 0;
+    width: 2px;
+    border-radius: 0 1px 1px 0;
+    background: var(--jc-accent);
+}
+
+.jc-conv[aria-current="true"] .jc-glyph.jc-conv__mark,
+.jc-conv[aria-current="true"] .jc-conv__time {
+    color: var(--jc-accent);
+}
+
+/* A chat started but not yet spoken to. Nothing has been stored, so nothing is claimed. */
+.jc-conv[data-source="draft"] .jc-conv__title {
+    color: var(--jc-text-muted);
+}
+
+.jc-sidebar__empty {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-3xs);
+    padding: var(--jc-space-l) 0;
+}
+
+.jc-sidebar__empty-title {
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-text);
+}
+
+.jc-sidebar__empty-hint {
+    font-size: var(--jc-font-size-xs);
+    line-height: 1.5;
+    color: var(--jc-text-muted);
+}
+
+/*
+ * Which rows are not real is still said out loud - in the About dialog the user menu opens, where a
+ * build note belongs. A paragraph of apology pinned above the fold in the navigation column is
+ * chrome the reader has to read past on every visit to learn something once.
+ */
+
+/* --- The user menu ------------------------------------------------------- */
+
+/*
+ * No rule above it. The foot and the list are the same sunken tone, so a hairline here would draw a
+ * second horizontal line into the corner where the composer's own edge already lands - at a
+ * different height, because the two bands are sized by different content - and the pair reads as one
+ * broken frame. The trigger's hover chip is what says the row is a control.
+ */
+.jc-sidebar__foot {
+    flex: 0 0 auto;
+    padding: var(--jc-space-xs) var(--jc-space-s) var(--jc-space-s);
+}
+
+.jc-user__trigger {
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: var(--jc-space-2xs);
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    text-align: start;
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast);
+}
+
+.jc-user__trigger:hover {
+    background: var(--jc-surface-raised);
+}
+
+.jc-glyph.jc-user__avatar {
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    width: 1.875rem;
+    height: 1.875rem;
+    padding: 0.3125rem;
+    border-radius: var(--jc-radius-pill);
+    background: var(--jc-accent-soft);
+    color: var(--jc-accent);
+    transition: background-color var(--jc-transition-theme), color var(--jc-transition-theme);
+}
+
+.jc-user__text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: var(--jc-line-height-tight);
+}
+
+.jc-user__name {
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-user__caption {
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-glyph.jc-user__chevron {
+    flex: 0 0 auto;
+    margin-inline-start: auto;
+    width: 0.875rem;
+    height: 0.875rem;
+    color: var(--jc-text-faint);
+}
+
+/* --- Focus, once, for every control the shell adds ----------------------- */
+
+.jc-new-chat:focus-visible,
+.jc-group__head:focus-visible,
+.jc-conv:focus-visible,
+.jc-user__trigger:focus-visible,
+.jc-menu__item:focus-visible,
+.jc-dialog__close:focus-visible {
+    outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
+    outline-offset: 1px;
+}
+
+/* --- The scrim ----------------------------------------------------------- */
+
+/*
+ * Only ever visible on a phone, where the drawer covers what it navigates. It is a control as much
+ * as a shade: tapping it is how most readers close a drawer, so it takes pointer events exactly
+ * when it is lit.
+ */
+.jc-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: light-dark(rgba(28, 22, 16, 0.44), rgba(0, 0, 0, 0.62));
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--jc-drawer-transition);
+}
+
+/* --- The content region -------------------------------------------------- */
+
+.jc-main {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-width: 0;
+    margin-inline-start: 0;
+    transition: margin-inline-start var(--jc-drawer-transition);
+}
+
+.jc-main__content {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* The routed view fills whatever the shell leaves it, rather than asserting its own height. */
+.jc-main__content > .jc-app {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+}
+
+/*
+ * The band is full bleed; its contents are not. Everything inside sits on .jc-measure, the same
+ * primitive the transcript and the composer use, so the title, the first word of every answer and
+ * the composer's own left edge land on one axis at every width - and change gutter at one width,
+ * because there is now only one rule deciding the horizontal inset instead of two that disagreed
+ * across a 127px band.
+ *
+ * position/z-index are for the fade below: the bar has to paint over the scroller it sits on.
+ */
+.jc-topbar {
+    position: relative;
+    z-index: 2;
+    flex: 0 0 auto;
+    border-bottom: 1px solid var(--jc-border);
+    background: var(--jc-surface);
+    transition: background-color var(--jc-transition-theme), border-color var(--jc-transition-theme);
+}
+
+.jc-topbar__inner {
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-s);
+    min-height: var(--jc-header-height);
+}
+
+/*
+ * The counterpart to the composer's scrim: scrolled text dissolves into the header instead of being
+ * guillotined by it. Same technique, same reason - a solid fill behind a mask rather than a gradient
+ * of the colour itself, so it eases with the theme instead of snapping to it.
+ */
+.jc-topbar::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 100%;
+    height: var(--jc-space-l);
+    background: var(--jc-surface);
+    -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
+    mask-image: linear-gradient(to bottom, #000, transparent);
+    pointer-events: none;
+    transition: background-color var(--jc-transition-theme);
+}
+
+.jc-topbar__heading {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: var(--jc-line-height-tight);
+}
+
+.jc-topbar__title {
+    font-size: var(--jc-font-size-m);
+    font-weight: var(--jc-font-weight-medium);
+    letter-spacing: var(--jc-tracking-tight);
+    color: var(--jc-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color var(--jc-transition-theme);
+}
+
+/* The model actually answering. Absent when nothing is configured - see MainLayout. */
+.jc-topbar__subtitle {
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-topbar__subtitle:empty {
+    display: none;
+}
+
+.jc-topbar__actions {
+    margin-inline-start: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-2xs);
+}
+
+/* --- Arrangement: desktop, 1024px and up --------------------------------- */
+
+/*
+ * A persistent column. It is showing unless the reader closed it, and while it is showing the bar
+ * drops its hamburger - the column carries its own collapse control, and two buttons that do the
+ * same thing at the same time is one button too many.
+ */
+@media (min-width: 64rem) {
+    .jc-shell:not([data-sidebar="closed"]) > .jc-sidebar {
+        transform: none;
+        visibility: visible;
+        transition: transform var(--jc-drawer-transition),
+                    visibility 0s,
+                    background-color var(--jc-transition-theme),
+                    border-color var(--jc-transition-theme);
+    }
+
+    .jc-shell:not([data-sidebar="closed"]) > .jc-main {
+        margin-inline-start: var(--jc-sidebar-width);
+    }
+
+    .jc-shell:not([data-sidebar="closed"]) .jc-topbar__toggle {
+        display: none;
+    }
+}
+
+/* --- Arrangement: tablet, 768px to 1023px -------------------------------- */
+
+/*
+ * The same column, still pushing the content aside, but collapsed until it is asked for: at this
+ * width a permanent 280px of navigation costs the conversation a third of its measure.
+ */
+@media (min-width: 48rem) and (max-width: 63.999rem) {
+    .jc-shell[data-sidebar="open"] > .jc-sidebar {
+        transform: none;
+        visibility: visible;
+        transition: transform var(--jc-drawer-transition),
+                    visibility 0s,
+                    background-color var(--jc-transition-theme),
+                    border-color var(--jc-transition-theme);
+    }
+
+    .jc-shell[data-sidebar="open"] > .jc-main {
+        margin-inline-start: var(--jc-sidebar-width);
+    }
+
+    .jc-shell[data-sidebar="open"] .jc-topbar__toggle {
+        display: none;
+    }
+}
+
+/* --- Arrangement: phone, below 768px ------------------------------------- */
+
+/*
+ * A drawer. The content never moves - shifting a full-width layout sideways leaves the reader
+ * looking at the edge of their own message - so the column floats over it above a scrim.
+ */
+@media (max-width: 47.999rem) {
+    .jc-shell {
+        --jc-sidebar-width: min(19rem, 84vw);
+    }
+
+    .jc-shell[data-sidebar="open"] > .jc-sidebar {
+        transform: none;
+        visibility: visible;
+        box-shadow: var(--jc-shadow-m);
+        transition: transform var(--jc-drawer-transition),
+                    visibility 0s,
+                    background-color var(--jc-transition-theme),
+                    border-color var(--jc-transition-theme);
+    }
+
+    .jc-shell[data-sidebar="open"] > .jc-scrim {
+        opacity: 1;
+        pointer-events: auto;
+    }
+}
+
+/* --- Dialogs the user menu opens ----------------------------------------- */
+
+.jc-shortcuts {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-xs);
+    min-width: min(24rem, 68vw);
+}
+
+.jc-shortcuts__row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--jc-space-m);
+    font-size: var(--jc-font-size-s);
+}
+
+.jc-shortcuts__keys {
+    flex: 0 0 9.5rem;
+    font-family: var(--jc-font-mono);
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text);
+}
+
+.jc-shortcuts__label {
+    color: var(--jc-text-muted);
+}
+
+.jc-about {
+    max-width: 30rem;
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text-muted);
+}
+
+.jc-about p {
+    margin: 0 0 var(--jc-space-s);
+}
+
+.jc-about p:last-child {
+    margin-bottom: 0;
+}
+
+.jc-dialog__close {
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-m);
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-text);
+    background: var(--jc-surface-raised);
+    border: 1px solid var(--jc-border-strong);
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), border-color var(--jc-transition-fast);
+}
+
+.jc-dialog__close:hover {
+    background: var(--jc-surface-sunken);
+    border-color: var(--jc-text-faint);
+}
+
+/*
+ * Vaadin's overlays, brought down to this UI's density.
+ *
+ * Both overlays live inside their host's shadow root, so the overlay element itself cannot be
+ * selected from here - the host re-exports its parts and those are what the rules below reach for.
+ * Only the frame and the type scale are touched; everything else already follows, because Lumo's
+ * own tokens are remapped in section 3 and colour-scheme is inherited into the shadow roots.
+ */
+vaadin-popover::part(overlay),
+vaadin-dialog::part(overlay) {
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-m);
+    box-shadow: var(--jc-shadow-m);
+    background: var(--jc-surface-raised);
+}
+
+vaadin-popover::part(content) {
+    padding: var(--jc-space-2xs);
+}
+
+/*
+ * The panel the user menu opens.
+ *
+ * Its placement is not Vaadin's default. A context menu opens where the pointer was, which put this
+ * one 42px outside the navigation column it belongs to and over the row that opened it; a popover
+ * anchored top-start to that row shares the column's 12px gutter and its width, and opens upwards
+ * because the trigger is at the foot of the screen. Rows are plain buttons - the panel is chrome
+ * this stylesheet owns rather than a component to be overridden from outside.
+ */
+.jc-menu {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-3xs);
+}
+
+.jc-menu__item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-xs);
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text);
+    text-align: start;
+    border-radius: var(--jc-radius-s);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), color var(--jc-transition-fast);
+}
+
+.jc-menu__item:hover {
+    background: var(--jc-surface-sunken);
+}
+
+.jc-menu__item:active {
+    background: var(--jc-border);
+}
+
+vaadin-dialog::part(header) {
+    padding: var(--jc-space-m) var(--jc-space-l) var(--jc-space-xs);
+}
+
+vaadin-dialog::part(title) {
+    font-size: var(--jc-font-size-l);
+    font-weight: var(--jc-font-weight-medium);
+    letter-spacing: var(--jc-tracking-tight);
+}
+
+vaadin-dialog::part(content) {
+    padding: var(--jc-space-xs) var(--jc-space-l);
+}
+
+vaadin-dialog::part(footer) {
+    padding: var(--jc-space-m) var(--jc-space-l);
+    background: transparent;
+}
+
+/* ==========================================================================
+ * 6. Transcript
+ * ========================================================================== */
+
+.jc-transcript {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    overscroll-behavior: contain;
+    /* Pinned content never sits flush against the composer's top edge. */
+    scroll-padding-block-end: var(--jc-space-m);
+    scrollbar-width: thin;
+    scrollbar-color: var(--jc-border-strong) transparent;
+}
+
+.jc-transcript::-webkit-scrollbar {
+    width: 10px;
+}
+
+.jc-transcript::-webkit-scrollbar-thumb {
+    background-clip: padding-box;
+    border: 3px solid transparent;
+    border-radius: var(--jc-radius-pill);
+    background-color: var(--jc-border-strong);
+}
+
+.jc-transcript::-webkit-scrollbar-thumb:hover {
+    background-color: var(--jc-text-faint);
+}
+
+.jc-transcript__inner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-exchange-gap);
+    /* Full height so the empty state can sit optically centred instead of pinned to the top. */
+    min-height: 100%;
+    padding-block: var(--jc-space-xl) var(--jc-space-l);
+}
+
+/* --- Empty state ------------------------------------------------------- */
+
+.jc-empty {
+    margin: auto 0;
+    padding-block: var(--jc-space-2xl);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: var(--jc-space-xs);
+}
+
+.jc-empty .jc-mark {
+    margin-bottom: var(--jc-space-xs);
+}
+
+.jc-empty__title {
+    font-size: var(--jc-font-size-l);
+    font-weight: var(--jc-font-weight-medium);
+    letter-spacing: var(--jc-tracking-tight);
+    line-height: var(--jc-line-height-tight);
+}
+
+.jc-empty__hint {
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text-muted);
+    max-width: 28rem;
+    transition: color var(--jc-transition-theme);
+}
+
+/* --- Messages ----------------------------------------------------------
+ *
+ * The assistant turn is prose on the page, not a card: boxing it costs a border, a shadow and
+ * ~90px of height per turn to say something the layout already says, and a full-measure card with
+ * a speech-bubble tail is a bubble that is never sized to its content. Only the user turn is
+ * bubbled, where content-sized width and the accent tint both earn their keep.
+ *
+ * There is no per-turn avatar. It was the same two letters on every answer, it carried nothing the
+ * alignment and the tint do not already carry, and in the flow it pushed the prose 40px off the
+ * measure the user's bubble is flush against - so the transcript never settled onto one axis, and
+ * on a 390px phone it spent 14% of the screen on a repeating mark. Hanging it in the gutter only
+ * works where there is a gutter to hang it in; below 1024px, and on any half-width window, there is
+ * not. Both speakers now start at the measure's own content edge.
+ * -------------------------------------------------------------------- */
+
+.jc-message {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--jc-space-s);
+}
+
+/* A question and its own answer belong together; the flex gap between exchanges is the wider one. */
+.jc-message + .jc-message[data-role="assistant"] {
+    margin-block-start: calc(var(--jc-turn-gap) - var(--jc-exchange-gap));
+}
+
+.jc-message__body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-2xs);
+    min-width: 0;
+}
+
+/*
+ * pre-wrap is what keeps the blank lines in raw text: the user's own message, and an answer while
+ * it is still arriving token by token.
+ */
+.jc-message__bubble {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    transition: color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+/*
+ * Set once the completed answer has been turned into real markup. The block elements carry their own
+ * spacing from section 7, so the whitespace between them must stop printing as blank lines.
+ */
+.jc-message__bubble--rendered {
+    white-space: normal;
+}
+
+/* The user's turn reads as the input to the conversation: aligned right, tinted with the accent. */
+.jc-message[data-role="user"] {
+    flex-direction: row-reverse;
+}
+
+.jc-message[data-role="user"] .jc-message__body {
+    align-items: flex-end;
+}
+
+.jc-message[data-role="user"] .jc-message__bubble {
+    max-width: 34rem;
+    padding: var(--jc-space-s) var(--jc-space-m);
+    border: 1px solid var(--jc-accent-line);
+    border-radius: var(--jc-radius-l);
+    /* The tail only reads as one because this bubble is sized to its content. */
+    border-bottom-right-radius: var(--jc-radius-s);
+    background: var(--jc-accent-soft);
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme),
+                color var(--jc-transition-theme);
+}
+
+/* An empty assistant bubble would collapse to a sliver before the first token arrives. */
+.jc-message--streaming .jc-message__bubble {
+    min-height: calc(var(--jc-font-size-m) * var(--jc-line-height-body));
+}
+
+.jc-message--streaming .jc-message__bubble::after {
+    content: "";
+    display: inline-block;
+    vertical-align: text-bottom;
+    width: 0.5rem;
+    height: 1em;
+    margin-left: 0.125rem;
+    border-radius: 1px;
+    background: var(--jc-accent);
+    animation: jc-caret 1s steps(2, jump-none) infinite;
+}
+
+@keyframes jc-caret {
+    50% {
+        opacity: 0.15;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .jc-transcript {
+        scroll-behavior: auto;
+    }
+
+    .jc-message--streaming .jc-message__bubble::after {
+        animation: none;
+    }
+}
+
+/* A turn that ended in an error, or one the reader stopped, is still a turn: marked, not hidden. */
+.jc-message--failed .jc-message__bubble {
+    color: var(--jc-danger);
+    border-color: color-mix(in srgb, var(--jc-danger) 45%, var(--jc-border));
+}
+
+.jc-message--failed[data-role="assistant"] .jc-message__bubble {
+    border-inline-start: 2px solid var(--jc-danger);
+    padding-inline-start: var(--jc-space-s);
+}
+
+.jc-message__note {
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text-muted);
+    transition: color var(--jc-transition-theme);
+}
+
+/* ==========================================================================
+ * 7. Prose
+ *
+ * The one content type the whole product exists to render. These rules cover what a markdown
+ * answer is made of, so the transcript is typeset rather than dumped; until a renderer lands the
+ * text is plain and simply inherits the body rules above.
+ * ========================================================================== */
+
+.jc-prose > :first-child {
+    margin-block-start: 0;
+}
+
+.jc-prose > :last-child {
+    margin-block-end: 0;
+}
+
+.jc-prose p {
+    margin-block: var(--jc-space-xs);
+}
+
+.jc-prose h1,
+.jc-prose h2,
+.jc-prose h3 {
+    margin-block: var(--jc-space-l) var(--jc-space-xs);
+    font-weight: var(--jc-font-weight-strong);
+    line-height: var(--jc-line-height-tight);
+    letter-spacing: var(--jc-tracking-tight);
+}
+
+.jc-prose h1 {
+    font-size: var(--jc-font-size-xl);
+}
+
+.jc-prose h2 {
+    font-size: var(--jc-font-size-l);
+}
+
+.jc-prose h3 {
+    font-size: var(--jc-font-size-m);
+}
+
+.jc-prose ul,
+.jc-prose ol {
+    margin-block: var(--jc-space-xs);
+    padding-inline-start: 1.25em;
+}
+
+.jc-prose li + li {
+    margin-block-start: var(--jc-space-2xs);
+}
+
+.jc-prose li > ul,
+.jc-prose li > ol {
+    margin-block: var(--jc-space-2xs);
+}
+
+/*
+ * A list row is already spaced by the list. An item that carries several blocks still wraps its own
+ * text in a paragraph, and that paragraph must not add a second gap inside the row.
+ */
+.jc-prose li > p {
+    margin-block: 0;
+}
+
+.jc-prose strong {
+    font-weight: var(--jc-font-weight-strong);
+}
+
+.jc-prose em {
+    font-style: italic;
+}
+
+.jc-prose a {
+    color: var(--jc-accent);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.3em;
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-prose a:hover {
+    color: var(--jc-accent-hover);
+}
+
+.jc-prose code {
+    font-family: var(--jc-font-mono);
+    font-size: 0.9em;
+    padding: 0.1em 0.3em;
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-s);
+    background: var(--jc-surface-sunken);
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+.jc-prose pre {
+    margin-block: var(--jc-space-s);
+    padding: var(--jc-space-s);
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-m);
+    background: var(--jc-surface-sunken);
+    /* A code block is the one place horizontal scroll is right; the page must never scroll. */
+    overflow-x: auto;
+    white-space: pre;
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+.jc-prose pre code {
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    font-size: inherit;
+}
+
+.jc-prose blockquote {
+    margin-block: var(--jc-space-s);
+    margin-inline: 0;
+    padding-inline-start: var(--jc-space-s);
+    border-inline-start: 2px solid var(--jc-accent-line);
+    color: var(--jc-text-muted);
+    transition: color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+.jc-prose hr {
+    margin-block: var(--jc-space-l);
+    border: 0;
+    border-top: 1px solid var(--jc-border);
+    transition: border-color var(--jc-transition-theme);
+}
+
+/*
+ * Held to the measure rather than given its own horizontal scroll: turning a table into a scroll
+ * container costs it its row alignment, since a block-level table no longer sizes its header and
+ * its body to the same columns. Columns compress and cells wrap instead.
+ */
+.jc-prose table {
+    width: auto;
+    max-width: 100%;
+    margin-block: var(--jc-space-s);
+    border-collapse: collapse;
+    font-size: var(--jc-font-size-s);
+}
+
+.jc-prose th,
+.jc-prose td {
+    padding: var(--jc-space-2xs) var(--jc-space-xs);
+    border: 1px solid var(--jc-border);
+    text-align: start;
+    vertical-align: top;
+    transition: border-color var(--jc-transition-theme);
+}
+
+.jc-prose th {
+    font-weight: var(--jc-font-weight-medium);
+    background: var(--jc-surface-sunken);
+    transition: background-color var(--jc-transition-theme);
+}
+
+/* ==========================================================================
+ * 8. Composer
+ * ========================================================================== */
+
+.jc-composer {
+    position: relative;
+    flex: 0 0 auto;
+    /* Same weight as the rule under the header; the shell has one hairline colour, not two. */
+    border-top: 1px solid var(--jc-border);
+    background: var(--jc-surface-sunken);
+    padding-block: var(--jc-space-s) var(--jc-space-m);
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+/*
+ * Scrim over the last strip of the transcript, so text fades out into the composer instead of
+ * being cut by a hairline. It sits above the band, overlapping the scroller, and takes no pointer
+ * events so it never eats a click on the last turn.
+ */
+.jc-composer::before {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    bottom: 100%;
+    height: var(--jc-space-l);
+    /*
+     * A solid fill behind a mask rather than a gradient of the colour itself: background-image
+     * cannot be transitioned, so a gradient scrim would snap to the new theme while every surface
+     * around it was still easing.
+     */
+    background: var(--jc-surface);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000);
+    mask-image: linear-gradient(to bottom, transparent, #000);
+    pointer-events: none;
+    transition: background-color var(--jc-transition-theme);
+}
+
+.jc-composer__inner {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-xs);
+}
+
+/*
+ * The shell carries the whole input affordance - border, radius, elevation and the focus ring -
+ * so the field and the send button read as one control instead of two adjacent widgets.
+ */
+.jc-composer__field {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--jc-space-xs);
+    padding: var(--jc-space-xs) var(--jc-space-xs) var(--jc-space-xs) var(--jc-space-m);
+    border: 1px solid var(--jc-border-strong);
+    border-radius: var(--jc-radius-l);
+    background: var(--jc-surface-raised);
+    box-shadow: var(--jc-shadow-s);
+    /*
+     * border-color rides the theme duration with every other surface: this is the most prominent
+     * control on the page and it used to land ~140ms before its own fill during a flip. The focus
+     * feel is carried by the halo, which is what the eye actually reads, and stays fast.
+     */
+    transition: border-color var(--jc-transition-theme),
+                box-shadow var(--jc-transition-fast),
+                background-color var(--jc-transition-theme);
+}
+
+.jc-composer__field:hover {
+    border-color: var(--jc-text-faint);
+}
+
+.jc-composer__field:focus-within {
+    border-color: var(--jc-accent);
+    box-shadow: var(--jc-shadow-m), 0 0 0 3px var(--jc-focus-ring-halo);
+}
+
+/*
+ * Locked while a turn streams. It steps down to the page ground rather than to the sunken tone,
+ * which the composer band itself now carries - a field the same colour as the bar around it is not
+ * a field, it is a gap.
+ */
+.jc-composer__field--busy {
+    background: var(--jc-surface);
+    border-color: var(--jc-border);
+    box-shadow: none;
+}
+
+.jc-composer__hint {
+    display: block;
+    text-align: center;
+    font-size: var(--jc-font-size-xs);
+    line-height: 1.5;
+    color: var(--jc-text-muted);
+    /* Reserved so swapping the idle hint for the streaming one shifts nothing. */
+    min-height: 1.5rem;
+    transition: color var(--jc-transition-theme);
+}
+
+/*
+ * The one moving thing next to the words "JavaClaw is responding". The other animated cue - the
+ * caret - is at the end of the answer, which on a full screen is several hundred pixels away from
+ * the control the reader is waiting at, so the hint carries its own.
+ */
+.jc-hint__dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.1875rem;
+    margin-inline-start: 0.375rem;
+    vertical-align: middle;
+}
+
+.jc-hint__dot {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.28;
+    animation: jc-hint-dot 1.2s ease-in-out infinite;
+}
+
+.jc-hint__dot:nth-child(2) {
+    animation-delay: 0.16s;
+}
+
+.jc-hint__dot:nth-child(3) {
+    animation-delay: 0.32s;
+}
+
+@keyframes jc-hint-dot {
+    30% {
+        opacity: 1;
+    }
+}
+
+/*
+ * The duration tokens cannot reach a keyframe animation, so this one is switched off by hand -
+ * left on, it is the only thing still moving on a page a reader asked to hold still.
+ */
+@media (prefers-reduced-motion: reduce) {
+    .jc-hint__dot {
+        animation: none;
+        opacity: 0.55;
+    }
+}
+
+.jc-composer__hint kbd {
+    display: inline-block;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: 1.4;
+    padding: var(--jc-space-3xs) var(--jc-space-2xs);
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-s);
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme),
+                color var(--jc-transition-theme);
+}
+
+/* --- The Vaadin text area, stripped back to plain text on the shell ----- */
+
+.jc-composer vaadin-text-area {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+    margin: 0;
+    /* The shell owns the chrome and the focus ring; the field itself must add none of its own. */
+    --vaadin-input-field-background: transparent;
+    --vaadin-input-field-border-width: 0;
+    --vaadin-input-field-border-radius: 0;
+    --vaadin-input-field-disabled-background: transparent;
+    --vaadin-input-field-hover-highlight-opacity: 0;
+    --vaadin-input-field-value-color: var(--jc-text);
+    --vaadin-input-field-disabled-value-color: var(--jc-text-faint);
+    --vaadin-input-field-placeholder-color: var(--jc-text-faint);
+    --vaadin-input-field-value-font-size: var(--jc-font-size-m);
+    --vaadin-input-field-height: auto;
+    --vaadin-focus-ring-width: 0;
+}
+
+.jc-composer vaadin-text-area::part(input-field) {
+    padding: 0;
+    background: transparent;
+    box-shadow: none;
+    min-height: 0;
+}
+
+/*
+ * Left to itself the field opens at Lumo's two-row minimum, which makes an empty composer look like
+ * it is already holding a draft. One line is the honest resting height; it grows from there.
+ *
+ * The cap and the scroll live on the textarea itself, not on a wrapper: scrolling the element that
+ * owns the padding means a partially scrolled line is padded rather than sliced through the middle
+ * of its glyphs, which is what a wrapper with overflow:hidden was doing on a phone.
+ */
+.jc-composer vaadin-text-area > textarea {
+    font-family: var(--jc-font-sans);
+    font-size: var(--jc-font-size-m);
+    line-height: var(--jc-line-height-body);
+    min-height: calc(var(--jc-font-size-m) * var(--jc-line-height-body));
+    max-height: min(40vh, 12rem);
+    padding-block: var(--jc-space-2xs);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--jc-border-strong) transparent;
+    /* The value colour arrives from a Vaadin custom property; the easing has to be declared here. */
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-composer vaadin-text-area[disabled] {
+    opacity: 1;
+}
+
+/*
+ * A locked field keeps its placeholder.
+ *
+ * Vaadin takes the slotted textarea to opacity 0 while it is disabled, which took the prompt with
+ * it: stripped of its fill, its shadow and its placeholder at once, the composer read as an empty
+ * outlined slab - the largest object on the screen, saying nothing - rather than as a control that
+ * is busy. The value is cleared on submit, so what this restores is the placeholder and nothing
+ * else.
+ */
+.jc-composer vaadin-text-area[disabled] > textarea {
+    cursor: not-allowed;
+    opacity: 1;
+}
+
+.jc-composer vaadin-text-area[disabled] > textarea::placeholder {
+    color: var(--jc-text-faint);
+    opacity: 1;
+}
+
+/* ==========================================================================
+ * 9. Buttons
+ *
+ * Every interactive element declares hover, focus-visible (Vaadin exposes it as [focus-ring]),
+ * active and disabled explicitly - a default state alone is not a state model.
+ * ========================================================================== */
+
+/* --- Primary send button ------------------------------------------------ */
+
+vaadin-button.jc-send {
+    flex: 0 0 auto;
+    width: 2.25rem;
+    height: 2.25rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border-radius: var(--jc-radius-pill);
+    cursor: pointer;
+    background: var(--jc-accent);
+    color: var(--jc-accent-contrast);
+    transition: background-color var(--jc-transition-theme),
+                color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme),
+                transform var(--jc-transition-fast),
+                box-shadow var(--jc-transition-fast);
+    --vaadin-button-background: var(--jc-accent);
+    --vaadin-button-text-color: var(--jc-accent-contrast);
+    --vaadin-button-border: none;
+    --vaadin-button-border-radius: var(--jc-radius-pill);
+    --vaadin-button-height: 2.25rem;
+    --vaadin-button-min-width: 0;
+    --vaadin-button-padding: 0;
+    --vaadin-button-margin: 0;
+}
+
+vaadin-button.jc-send:hover {
+    background: var(--jc-accent-hover);
+    box-shadow: var(--jc-shadow-xs);
+    --vaadin-button-background: var(--jc-accent-hover);
+}
+
+vaadin-button.jc-send:active {
+    background: var(--jc-accent-active);
+    transform: scale(0.94);
+    --vaadin-button-background: var(--jc-accent-active);
+}
+
+/*
+ * A plain outline would sit directly on the accent fill and all but vanish. The inner ring in the
+ * surface colour opens a gap first, so the keyboard ring reads at a glance on either theme.
+ */
+vaadin-button.jc-send[focus-ring] {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--jc-surface-raised),
+                0 0 0 calc(2px + var(--jc-focus-ring-width)) var(--jc-focus-ring-color);
+}
+
+/*
+ * "Not yet", not "broken". The button is disabled whenever the composer is empty, so this is a
+ * resting state a user sees constantly - it has to stay legible. Fading the accent fill put the
+ * glyph at 2.08:1 against its own button; a quiet fill with muted ink keeps the arrow readable and
+ * says the control is waiting for input.
+ */
+vaadin-button.jc-send[disabled] {
+    cursor: not-allowed;
+    opacity: 1;
+    transform: none;
+    box-shadow: none;
+    background: var(--jc-surface-sunken);
+    color: var(--jc-text-muted);
+    --vaadin-button-background: var(--jc-surface-sunken);
+    --vaadin-button-text-color: var(--jc-text-muted);
+    --vaadin-button-border: 1px solid var(--jc-border);
+}
+
+/*
+ * Stop is not send. They are one button because they occupy one slot at one moment, but a cancel
+ * action carrying the accent means the page's primary action and the way out of it are painted
+ * identically and told apart by a 6px glyph. The accent stays with send; stop steps down to a
+ * raised, outlined control - present and pressable, but no longer the loudest thing on screen.
+ */
+vaadin-button.jc-send--stop {
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+    --vaadin-button-background: var(--jc-surface-raised);
+    --vaadin-button-text-color: var(--jc-text);
+    --vaadin-button-border: 1px solid var(--jc-border-strong);
+}
+
+vaadin-button.jc-send--stop:hover {
+    background: var(--jc-surface-sunken);
+    box-shadow: none;
+    --vaadin-button-background: var(--jc-surface-sunken);
+    --vaadin-button-border: 1px solid var(--jc-text-faint);
+}
+
+vaadin-button.jc-send--stop:active {
+    background: var(--jc-border);
+    --vaadin-button-background: var(--jc-border);
+}
+
+/* --- Quiet icon button (header) ----------------------------------------- */
+
+vaadin-button.jc-icon-button {
+    flex: 0 0 auto;
+    width: 2.125rem;
+    height: 2.125rem;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    background: transparent;
+    color: var(--jc-text-muted);
+    transition: background-color var(--jc-transition-theme),
+                color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+    --vaadin-button-background: transparent;
+    --vaadin-button-text-color: var(--jc-text-muted);
+    --vaadin-button-border: 1px solid transparent;
+    --vaadin-button-border-radius: var(--jc-radius-m);
+    --vaadin-button-height: 2.125rem;
+    --vaadin-button-min-width: 0;
+    --vaadin-button-padding: 0;
+    --vaadin-button-margin: 0;
+}
+
+/* The header band is the sunken tone, so the hover chip has to come up, not down. */
+vaadin-button.jc-icon-button:hover {
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+    --vaadin-button-background: var(--jc-surface-raised);
+    --vaadin-button-text-color: var(--jc-text);
+    --vaadin-button-border: 1px solid var(--jc-border);
+}
+
+vaadin-button.jc-icon-button:active {
+    background: var(--jc-border);
+    --vaadin-button-background: var(--jc-border);
+}
+
+vaadin-button.jc-icon-button[focus-ring] {
+    outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
+    outline-offset: 2px;
+}
+
+vaadin-button.jc-icon-button[disabled] {
+    cursor: not-allowed;
+    color: var(--jc-text-faint);
+    --vaadin-button-text-color: var(--jc-text-faint);
+}
+
+/* ==========================================================================
+ * 10. Glyphs
+ *
+ * Two techniques, one wrapper. A bar, an arrowhead and a square are exactly describable in CSS and
+ * cost nothing. A sun and a moon are not: drawn from box-shadows they came out as a dot cluster and
+ * an aliased sliver, so they are inline SVG in the DOM - which needs no bundler, no @JsModule and
+ * no Node, and still inherits currentColor like the CSS glyphs do.
+ * ========================================================================== */
+
+.jc-glyph {
+    display: block;
+    position: relative;
+    width: 1rem;
+    height: 1rem;
+    color: inherit;
+}
+
+.jc-glyph > svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+/* Vaadin slots an icon next to a label and spaces it accordingly; these buttons have no label. */
+vaadin-button > .jc-glyph {
+    margin: 0;
+}
+
+/* --- Upward arrow (send) ------------------------------------------------ */
+
+.jc-glyph--arrow-up::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 12%;
+    width: 2px;
+    height: 76%;
+    border-radius: 1px;
+    background: currentColor;
+    transform: translateX(-50%);
+}
+
+.jc-glyph--arrow-up::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 19%;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-left: 2px solid currentColor;
+    border-top: 2px solid currentColor;
+    border-radius: 1px;
+    transform: translateX(-50%) rotate(45deg);
+}
+
+/* --- Stop (cancel a generation) ----------------------------------------- */
+
+.jc-glyph--stop::before {
+    content: "";
+    position: absolute;
+    inset: 25%;
+    border-radius: 2px;
+    background: currentColor;
+}
+
+/* ==========================================================================
+ * 11. Narrow viewports
+ * ========================================================================== */
+
+@media (max-width: 40rem) {
+    :root {
+        --jc-measure: 100%;
+    }
+
+    .jc-measure {
+        padding-inline: var(--jc-space-m);
+    }
+
+    .jc-transcript__inner {
+        padding-block: var(--jc-space-l) var(--jc-space-m);
+    }
+
+    /* Keeping a sliver of gutter is what still reads as "right aligned" on a phone. */
+    .jc-message[data-role="user"] .jc-message__bubble {
+        max-width: 88%;
+    }
+
+    .jc-composer {
+        padding-bottom: max(var(--jc-space-m), env(safe-area-inset-bottom));
+    }
+}
