@@ -66,6 +66,23 @@
 
     --jc-border: light-dark(#e7e3dd, #2e2c36);
     --jc-border-strong: light-dark(#d4cec6, #413e4b);
+    /*
+     * The only border in the sheet that is a control's boundary rather than a division between two
+     * surfaces, and the difference matters because WCAG 1.4.11 asks 3:1 of the first and nothing of
+     * the second. --jc-border-strong measures 1.36-1.56:1 in light and 1.57-1.83:1 in dark; drawn
+     * around the empty state's suggestion chips it was a boundary a reader cannot see claiming to
+     * be the thing that identifies the control.
+     *
+     * Measured on every ground a bounded control lands on, and every figure recomputed from these
+     * two values by StylesheetClaimsTest:
+     *
+     *   light  3.38:1 on --jc-surface   3.52:1 on --jc-surface-raised   3.07:1 on --jc-surface-sunken
+     *   dark   3.48:1 on --jc-surface   3.13:1 on --jc-surface-raised   3.66:1 on --jc-surface-sunken
+     *
+     * Reserved for that case. Using it for the hairlines between surfaces would draw a grid over an
+     * interface whose whole structure is carried by tone.
+     */
+    --jc-border-control: light-dark(#8d8880, #6f6a7c);
 
     /* --- Text ----------------------------------------------------------- */
     --jc-text: light-dark(#1b1a1e, #ece9e6);
@@ -74,8 +91,27 @@
      * The dimmest text the UI is allowed to paint. Measured against every ground it lands on:
      * 5.26:1 on --jc-surface, 5.48:1 on --jc-surface-raised, 4.77:1 on --jc-surface-sunken in
      * light; 5.15:1 / 4.63:1 / 5.41:1 in dark. It is reserved for the input placeholder - anything
-     * a reader has to read (hints, labels) uses --jc-text-muted, which clears AA with room to
-     * spare at 12px.
+     * a reader has to read (hints, labels) uses --jc-text-muted, which clears AA on all three:
+     * 5.03:1 on the sunken tone in light, 5.66:1 in dark.
+     *
+     * Neither of them is legible on --jc-accent-soft, which is a fourth ground this audit used to
+     * stop one case short of - see the note there. Nothing dimmer than --jc-text is allowed on it.
+     *
+     * The prose above is the reasoning; the table below is the measurement, and it is recomputed
+     * from the tokens by StylesheetClaimsTest for the same reason every other table in this file is.
+     * The row that matters most is the last: the dark placeholder clears AA by 0.13, which is close
+     * enough that darkening --jc-text-faint by one step would put a control's own label under the
+     * threshold without anything on screen looking different enough to notice.
+     *
+     *   --jc-text on surface                 16.61:1 light   15.02:1 dark   yes
+     *   --jc-text on surface-raised          17.31:1 light   13.51:1 dark   yes
+     *   --jc-text on surface-sunken          15.08:1 light   15.78:1 dark   yes
+     *   --jc-text-muted on surface            5.53:1 light    6.69:1 dark   yes
+     *   --jc-text-muted on surface-raised     5.77:1 light    6.02:1 dark   yes
+     *   --jc-text-muted on surface-sunken     5.03:1 light    7.03:1 dark   yes
+     *   --jc-text-faint on surface            5.26:1 light    5.15:1 dark   yes
+     *   --jc-text-faint on surface-raised     5.48:1 light    4.63:1 dark   yes
+     *   --jc-text-faint on surface-sunken     4.77:1 light    5.41:1 dark   yes
      */
     --jc-text-faint: light-dark(#6f6862, #8c8694);
 
@@ -89,8 +125,43 @@
      * amount of brand in both. Hand-picked dark values drifted to 1.16:1 against the page ground,
      * which made the tint vanish; mixing against --jc-surface-raised holds it at 1.66:1 over the
      * ground and 1.49:1 over the raised tone in dark, and 1.33:1 / 1.38:1 in light.
+     *
+     * It is also a ground in its own right - the user's bubble and the selected conversation row
+     * both sit on it - and the audit above originally skipped it, which is how four AA failures got
+     * onto the one row the column exists to draw attention to. Resolved, it is rgb(235,216,201) in
+     * light and rgb(76,56,47) in dark, and what may be painted on it is:
+     *
+     *   --jc-text          12.53:1 light   9.08:1 dark   yes
+     *   --jc-accent-hover   5.44:1 light   5.50:1 dark   yes
+     *   --jc-accent         4.21:1 light   4.49:1 dark   no, and it is the row's time
+     *   --jc-text-muted     4.18:1 light   4.04:1 dark   no
+     *   --jc-text-faint     3.97:1 light   3.11:1 dark   no
+     *
+     * StylesheetClaimsTest recomputes every one of these from the tokens below, because this table
+     * is a measurable claim and the last version of it was written from an audit that stopped one
+     * ground short.
      */
     --jc-accent-soft: color-mix(in srgb, var(--jc-accent) 22%, var(--jc-surface-raised));
+    /*
+     * The tinted ground under pointer and under press. Mixed from the same accent against the same
+     * raised tone as --jc-accent-soft, three steps of one ramp rather than three picked colours, so
+     * the selected row deepens the way every other control does instead of changing hue as it
+     * responds.
+     *
+     * These exist because the selected row had no response at all: --jc-accent-soft is one class
+     * plus one attribute, exactly the weight of .jc-conv:hover, and it was declared later - so the
+     * one row a reader is most likely to point at was the only row in the column that painted
+     * nothing under the pointer and nothing on press.
+     *
+     * Measured on the deepest of the three, the 38% mix, which is the tightest case. Both rows are
+     * recomputed from the tokens by StylesheetClaimsTest, for the same reason the accent-soft table
+     * above them is - a contrast figure written into a comment and checked by nobody is how three
+     * of this sheet's defects shipped:
+     *   --jc-text on soft-active     9.63:1 light   6.48:1 dark   the row's own label, needs 4.5
+     *   --jc-accent on soft-active   3.23:1 light   3.21:1 dark   the 2px rail, non-text, needs 3
+     */
+    --jc-accent-soft-hover: color-mix(in srgb, var(--jc-accent) 30%, var(--jc-surface-raised));
+    --jc-accent-soft-active: color-mix(in srgb, var(--jc-accent) 38%, var(--jc-surface-raised));
     --jc-accent-line: color-mix(in srgb, var(--jc-accent) 32%, var(--jc-surface-raised));
 
     /*
@@ -100,6 +171,33 @@
     --jc-mark-surface: light-dark(#a44c08, #c9773c);
 
     --jc-danger: light-dark(#a52220, #f0a8a4);
+
+    /*
+     * --- Code ------------------------------------------------------------
+     *
+     * A code block is a card inside the answer rather than a tinted paragraph, so it gets a ground
+     * of its own: one step further from the page than the sunken tone in light, and nearly black in
+     * dark, where anything else makes the snippet read as another bubble.
+     */
+    --jc-code-surface: light-dark(#f6f4f1, #0b0a0f);
+    --jc-code-head: light-dark(#edeae5, #15141b);
+
+    /*
+     * Six token colours and no more. A highlighter with eleven of them turns a snippet into a
+     * ransom note; these are the five distinctions that actually carry meaning while skimming code
+     * - what is commentary, what is literal text, what is a number, what the language reserved,
+     * what is being called - plus one for the type-shaped names the JVM languages are full of.
+     *
+     * Every one of them is measured on --jc-code-surface, which is the only ground they land on:
+     * 4.9:1 or better in light and 4.6:1 or better in dark, so a comment is still readable text
+     * rather than a hint that something was there.
+     */
+    --jc-code-comment: light-dark(#6a675f, #85808d);
+    --jc-code-keyword: light-dark(#8a3f05, #f0a469);
+    --jc-code-string: light-dark(#2c6a4c, #7fc9a0);
+    --jc-code-number: light-dark(#8a5300, #d9b46a);
+    --jc-code-type: light-dark(#1f5578, #86b6dd);
+    --jc-code-function: light-dark(#6f3a9c, #c3a0ec);
 
     /* --- Elevation ------------------------------------------------------ */
     --jc-shadow-xs: 0 1px 2px light-dark(rgba(28, 22, 16, 0.06), rgba(0, 0, 0, 0.4));
@@ -134,6 +232,31 @@
     --jc-line-height-tight: 1.3;
     --jc-line-height-body: 1.65;
 
+    /*
+     * One line of body prose, resolved. Everything that has to reason about a line of transcript -
+     * the two scroll masks, the reserved band above the composer - derives from this rather than
+     * from a spacing token that happens to be about the same size, because the two drift apart the
+     * moment either the size or the leading changes and nothing notices.
+     */
+    --jc-line-box: calc(var(--jc-font-size-m) * var(--jc-line-height-body));
+
+    /*
+     * How far a scroll mask reaches past a chrome edge, and the non-obvious constraint on it: it
+     * must exceed one line box, or the gradient ends inside a glyph.
+     *
+     * At one line box or less, a line of transcript straddling the edge is opaque at the top of its
+     * x-height and clear at the bottom - the mask stops mid-letter, and what the reader sees is not
+     * a fade but a horizontal cut through the topmost visible line. Measured at the old value of
+     * 24px against a 24.75px line box, that line held 2.96:1 against the page: below AA on text the
+     * interface is still asking to be read.
+     *
+     * Two line boxes is the smallest value where no single line can span the whole ramp, so the
+     * intensity change across any one glyph is at most half the gradient and the row nearest the
+     * edge is masked out entirely rather than sliced. Expressed as a multiple of --jc-line-box so
+     * it cannot fall behind a change to the type scale.
+     */
+    --jc-scroll-mask: calc(var(--jc-line-box) * 2);
+
     --jc-tracking-tight: -0.011em;
     --jc-tracking-wide: 0.06em;
 
@@ -154,6 +277,24 @@
     --jc-turn-gap: var(--jc-space-m);
     --jc-exchange-gap: var(--jc-space-l);
 
+    /*
+     * --- The sidebar rail -------------------------------------------------
+     *
+     * Two numbers for the whole column, because it had six. Measured in one 1440px capture: the
+     * brand mark started at 12, the user avatar at 16, the search magnifier at 20, a conversation
+     * title at 24, the seam label at 25 and the New chat glyph at 28 - a 16px spread of leading ink
+     * inside a 280px column, which reads as a list that was assembled rather than laid out.
+     *
+     * --jc-rail-gutter is where a row's own box begins, so every hover chip in the column lands on
+     * the same two edges. --jc-rail-inset is where the ink inside it begins - the first glyph of a
+     * row that has one, the first letter of a row that does not - and it is the gutter twice over
+     * because a chip's own padding is the second gutter. Anything in this column that sets a leading
+     * edge sets it from one of these two, and a control whose border eats a pixel subtracts that
+     * pixel rather than inventing a third number.
+     */
+    --jc-rail-gutter: var(--jc-space-s);
+    --jc-rail-inset: calc(var(--jc-space-s) * 2);
+
     /* --- Radius --------------------------------------------------------- */
     --jc-radius-s: 6px;
     --jc-radius-m: 10px;
@@ -165,8 +306,73 @@
     --jc-transition-theme: 260ms ease;
 
     /* --- Layout --------------------------------------------------------- */
-    --jc-measure: 46rem;
+    /*
+     * The one measure the whole shell answers to: header title, transcript, every markdown block
+     * and the composer all take their leading edge from it, which is what keeps them on a single
+     * optical axis at every width.
+     *
+     * 40rem, down from 46rem, for a typographic reason rather than a layout one. At 46rem the
+     * column resolved to 688px of text and a sentence of ordinary English prose measured 6.83px
+     * per character, so a line ran 95-100 characters - outside the band a reader can return to the
+     * next line without losing their place. 40rem resolves to 592px, which is 82-87 characters on
+     * the same measurement.
+     *
+     * Narrowed here rather than by capping the prose column on its own, which was the other way to
+     * reach the same character count. A cap on the prose alone would have left the paragraphs
+     * ending 100px short of the code panel, the table and the user's bubble, and the thing this
+     * layout does best is that all of those share one leading edge and one trailing edge. Moving
+     * the single measure keeps every one of those relationships and changes only where the column
+     * sits.
+     */
+    --jc-measure: 40rem;
     --jc-header-height: 3.25rem;
+
+    /*
+     * One height for the boxes that stack in the sidebar rail. They were 34px, 32px and 33px -
+     * three values for three controls sharing two vertical edges, which reads as a column that was
+     * assembled rather than laid out. Anything in that stack sizes from this.
+     */
+    --jc-control-height: 2.25rem;
+
+    /*
+     * Where the ink after a leading glyph begins, measured from the glyph's own leading edge: the
+     * icon box plus the gap after it. The New chat label sat at x=48 and the search placeholder at
+     * x=42 on two controls with identical left edges, because each had picked its own icon size and
+     * its own gap. One value, used by both, so a row with a glyph and a row without still agree.
+     */
+    --jc-rail-icon: 1rem;
+    --jc-rail-icon-lead: calc(var(--jc-rail-icon) + var(--jc-space-xs));
+
+    /*
+     * --- The per-turn control row -----------------------------------------
+     *
+     * The size of one control, the size of the glyph inside it, and what it costs to seat that
+     * glyph's ink on the column's axis rather than the button's box.
+     *
+     * The third is derived, not chosen. It used to be a literal -0.4375rem, which was correct for
+     * the glyph size on the day it was written and drifted to 2px inboard of the axis the moment
+     * the glyph changed - a stroked mark does not fill its own box, so the ink is narrower than the
+     * viewBox by a fixed fraction. Every glyph in Icons.java is drawn to the same 16-unit box at
+     * the same 1.5-unit stroke, which puts the ink between 1.5 and 14.5 - thirteen sixteenths of
+     * the box, and the same fraction at any size. Expressed that way the correction re-derives
+     * itself if either number above changes.
+     */
+    --jc-action-size: 1.875rem;
+    --jc-action-glyph: 1.125rem;
+    --jc-glyph-ink: 0.8125;
+    --jc-action-optical-inset:
+        calc((var(--jc-action-size) - var(--jc-action-glyph) * var(--jc-glyph-ink)) / 2);
+
+    /*
+     * The same three numbers for the shell's icon buttons, which are a different size and carry a
+     * different glyph, and whose correction was the same typed -0.4375rem. It was 3.5px short: the
+     * theme control's mark stopped inboard of the trailing edge while every leading edge on the
+     * screen was flush, so the bar read as narrower on one side than the other.
+     */
+    --jc-icon-button-size: 2.125rem;
+    --jc-icon-button-glyph: 1rem;
+    --jc-icon-button-optical-inset:
+        calc((var(--jc-icon-button-size) - var(--jc-icon-button-glyph) * var(--jc-glyph-ink)) / 2);
 }
 
 /*
@@ -382,7 +588,9 @@ body {
     align-items: center;
     gap: var(--jc-space-xs);
     min-height: var(--jc-header-height);
-    padding-inline: var(--jc-space-s) var(--jc-space-xs);
+    /* The mark is the column's first ink and sits on the rail's ink line, not on its gutter: a
+     * lockup 12px further out than every row under it reads as a header from another design. */
+    padding-inline: var(--jc-rail-inset) var(--jc-space-xs);
     border-bottom: 1px solid var(--jc-border);
     transition: border-color var(--jc-transition-theme);
 }
@@ -402,7 +610,21 @@ body {
     transition: color var(--jc-transition-theme);
 }
 
-.jc-sidebar__collapse {
+/*
+ * Neither half of this selector is noise.
+ *
+ * `vaadin-button.jc-icon-button` sets `margin: 0`, at (0,1,1) and 1400 lines further down. This rule
+ * used to be a bare `.jc-sidebar__collapse` at (0,1,0), so it lost on specificity and the control
+ * that is supposed to sit on the column's trailing edge was parked against the wordmark, 115px
+ * short, leaving the right half of the head empty - which is what made the head read as a band with
+ * a stray glyph in the middle of it.
+ *
+ * Matching the element only equalises the two; it does not settle them, because a logical
+ * margin-inline-start and a physical margin shorthand cascade together on the used value, and at
+ * equal specificity the later declaration wins - which is still the reset. So the parent is named
+ * too: at (0,2,1) this outranks the reset wherever it appears in the file.
+ */
+.jc-sidebar__head vaadin-button.jc-sidebar__collapse {
     margin-inline-start: auto;
 }
 
@@ -413,7 +635,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: var(--jc-space-xs);
-    padding: var(--jc-space-s);
+    padding: var(--jc-space-s) var(--jc-rail-gutter);
 }
 
 /*
@@ -426,9 +648,11 @@ body {
     align-items: center;
     gap: var(--jc-space-xs);
     width: 100%;
+    min-height: var(--jc-control-height);
     box-sizing: border-box;
     margin: 0;
-    padding: var(--jc-space-xs) var(--jc-space-s);
+    /* Less its own border, so the glyph lands on the rail's ink line rather than one pixel past it. */
+    padding: var(--jc-space-xs) calc(var(--jc-rail-gutter) - 1px);
     font-family: inherit;
     font-size: var(--jc-font-size-s);
     font-weight: var(--jc-font-weight-medium);
@@ -447,7 +671,13 @@ body {
                 color var(--jc-transition-theme);
 }
 
+/*
+ * Sized from the rail's icon value rather than from the glyph default, so the label after it starts
+ * on exactly the same x as the search field's placeholder one row below.
+ */
 .jc-new-chat .jc-glyph.jc-glyph {
+    width: var(--jc-rail-icon);
+    height: var(--jc-rail-icon);
     color: var(--jc-accent);
 }
 
@@ -469,11 +699,25 @@ body {
     --vaadin-input-field-border-width: 1px;
     --vaadin-input-field-border-color: var(--jc-border);
     --vaadin-input-field-border-radius: var(--jc-radius-m);
-    --vaadin-input-field-height: 2rem;
+    --vaadin-input-field-height: var(--jc-control-height);
     --vaadin-input-field-hover-highlight-opacity: 0;
     --vaadin-input-field-value-color: var(--jc-text);
     --vaadin-input-field-value-font-size: var(--jc-font-size-s);
     --vaadin-input-field-placeholder-color: var(--jc-text-faint);
+}
+
+/*
+ * The magnifier is this row's leading glyph and belongs on the same line as every other one. Vaadin
+ * insets a prefix by its own default, which put it at 18 against the column's 24. Naming the part is
+ * the only way in. No correction for the border here, unlike the New chat button: this padding is
+ * measured from inside the field's own border box, so subtracting it landed the glyph a pixel short.
+ */
+.jc-search::part(input-field) {
+    padding-inline-start: var(--jc-rail-gutter);
+    /* The second half of the same alignment: the magnifier's own box is set below, and this is the
+     * gap after it, so the placeholder starts at gutter + icon + gap - the same arithmetic the New
+     * chat label above it resolves through. Vaadin's default slot gap put it 6px short. */
+    gap: var(--jc-space-xs);
 }
 
 .jc-search:hover {
@@ -484,10 +728,24 @@ body {
     --vaadin-input-field-border-color: var(--jc-accent);
 }
 
+/*
+ * The keyboard's own state, told apart from the pointer's.
+ *
+ * [focused] covers both, and on its own it gave the search field a 1px border-colour change where
+ * every other control in the shell answers a Tab with the same 2px ring - so the one stop in the
+ * column that is a text field was the one stop whose focus did not look like focus. Vaadin sets
+ * [focus-ring] only for keyboard focus, which is exactly the distinction :focus-visible draws for
+ * the plain controls beside it.
+ */
+.jc-search[focus-ring]::part(input-field) {
+    outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
+    outline-offset: 1px;
+}
+
 .jc-search > .jc-glyph {
     flex: 0 0 auto;
-    width: 0.875rem;
-    height: 0.875rem;
+    width: var(--jc-rail-icon);
+    height: var(--jc-rail-icon);
     color: var(--jc-text-faint);
 }
 
@@ -503,7 +761,7 @@ body {
     min-height: 0;
     overflow-y: auto;
     overscroll-behavior: contain;
-    padding-inline: var(--jc-space-s);
+    padding-inline: var(--jc-rail-gutter);
     padding-block-end: var(--jc-space-s);
     scrollbar-width: thin;
     scrollbar-color: var(--jc-border-strong) transparent;
@@ -529,10 +787,10 @@ body {
  * because it is the quietest thing in the column; the chevron and the hover tint are what say it
  * can be pressed.
  *
- * Its inset, its gap and its glyph size are the same as a conversation row's and the same as the
- * New chat button's, so every label in the column - the action, the folder names and the
- * conversations filed under them - starts on one x. A 4px stagger between a folder and its own
- * children is not a hierarchy, it is a miss; hierarchy here is carried by case and colour.
+ * Its chevron is on the trailing edge and not the leading one, which is what lets the folder name
+ * start on the same x as the conversations filed under it. Leading it put the label 13px inboard of
+ * its own children, and a stagger of that size between a folder and its contents is not a hierarchy,
+ * it is a miss - hierarchy here is carried by case and colour, both of which cost no width.
  */
 .jc-group__head {
     display: flex;
@@ -541,7 +799,7 @@ body {
     width: 100%;
     box-sizing: border-box;
     margin: 0;
-    padding: var(--jc-space-2xs) var(--jc-space-s);
+    padding: var(--jc-space-2xs) var(--jc-rail-gutter);
     border: 0;
     background: transparent;
     font-family: inherit;
@@ -558,6 +816,16 @@ body {
 .jc-group__head:hover {
     color: var(--jc-text-muted);
     background: color-mix(in srgb, var(--jc-border) 45%, transparent);
+}
+
+/*
+ * Press deepens the same wash rather than introducing a second colour. A control that collapses a
+ * group has to acknowledge the click before the group finishes collapsing, or the reader cannot
+ * tell a slow response from a missed target.
+ */
+.jc-group__head:active {
+    color: var(--jc-text);
+    background: var(--jc-border);
 }
 
 .jc-glyph.jc-group__chevron {
@@ -583,6 +851,12 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* The count is pushed to the trailing edge and the chevron follows it, so the two read as one
+ * trailing cluster rather than as a number floating between the name and the control. */
+.jc-group__head .jc-group__count {
+    margin-inline-end: var(--jc-space-3xs);
+}
+
 .jc-group__items {
     display: flex;
     flex-direction: column;
@@ -601,9 +875,12 @@ body {
     align-items: center;
     gap: var(--jc-space-xs);
     width: 100%;
+    /* The rail's one height. A row was 33px beside a 34px button and a 32px field - three values
+     * for three controls sharing the same two vertical edges. */
+    min-height: var(--jc-control-height);
     box-sizing: border-box;
     margin: 0;
-    padding: var(--jc-space-2xs) var(--jc-space-s);
+    padding: var(--jc-space-2xs) var(--jc-rail-gutter);
     border: 0;
     background: transparent;
     font-family: inherit;
@@ -614,12 +891,6 @@ body {
     border-radius: var(--jc-radius-m);
     cursor: pointer;
     transition: background-color var(--jc-transition-fast), color var(--jc-transition-fast);
-}
-
-.jc-glyph.jc-conv__mark {
-    flex: 0 0 auto;
-    color: var(--jc-text-faint);
-    transition: color var(--jc-transition-fast);
 }
 
 .jc-conv__title {
@@ -643,10 +914,6 @@ body {
     color: var(--jc-text);
 }
 
-.jc-conv:hover .jc-glyph.jc-conv__mark {
-    color: var(--jc-text-muted);
-}
-
 .jc-conv:active {
     background: var(--jc-border);
 }
@@ -661,6 +928,21 @@ body {
     color: var(--jc-text);
 }
 
+/*
+ * The selected row is still a button. Both of these carry the attribute as well as the pseudo-class
+ * so they outrank the rule above on specificity rather than on source order - the tie between
+ * `.jc-conv:hover` and `.jc-conv[aria-current="true"]` is what silenced this row in the first place,
+ * and a rule that wins only because of where it sits in the file loses again the next time the
+ * section is reordered.
+ */
+.jc-conv[aria-current="true"]:hover {
+    background: var(--jc-accent-soft-hover);
+}
+
+.jc-conv[aria-current="true"]:active {
+    background: var(--jc-accent-soft-active);
+}
+
 /* Held inside the chip's straight edge, so a 10px corner radius cannot clip the rail's ends. */
 .jc-conv[aria-current="true"]::before {
     content: "";
@@ -672,14 +954,92 @@ body {
     background: var(--jc-accent);
 }
 
-.jc-conv[aria-current="true"] .jc-glyph.jc-conv__mark,
+/*
+ * --jc-accent-hover, not --jc-accent. The row's ground is --jc-accent-soft, and the accent itself
+ * reaches only 4.21:1 against it in light and 4.49:1 in dark - under AA on the one row in the column
+ * that is meant to be the easiest to read. The hover tone is the same hue two steps darker, which is
+ * 5.44:1 and 5.50:1. See the audit at the token.
+ */
 .jc-conv[aria-current="true"] .jc-conv__time {
-    color: var(--jc-accent);
+    color: var(--jc-accent-hover);
 }
 
-/* A chat started but not yet spoken to. Nothing has been stored, so nothing is claimed. */
-.jc-conv[data-source="draft"] .jc-conv__title {
+/*
+ * A chat started but not yet spoken to.
+ *
+ * :not() is load-bearing, not decoration. Both selectors used to be able to match one row, and this
+ * one is more specific, so a selected draft got a muted title on the tinted ground - 4.18:1, under
+ * AA - while the [aria-current] rule directly above it was trying to give that row the emphasis its
+ * ground exists for. The selected row's own colour wins now, and what tells a draft apart is the
+ * word "Draft" the row draws in place of a time.
+ */
+.jc-conv[data-source="draft"]:not([aria-current="true"]) .jc-conv__title {
     color: var(--jc-text-muted);
+}
+
+/*
+ * The mark on a row nothing has been written for.
+ *
+ * It sits where a stored row shows its time, because that is the comparison being drawn: this row
+ * has no modification to report, and the space that would say when is used to say why not. Typeset
+ * as a label rather than a filled chip - it is a statement of fact about the row, not a status the
+ * reader has to act on.
+ */
+.jc-conv__badge {
+    flex: 0 0 auto;
+    padding-inline: var(--jc-space-2xs);
+    border: 1px dashed var(--jc-border-strong);
+    border-radius: var(--jc-radius-s);
+    font-size: 0.6875rem;
+    line-height: 1.5;
+    letter-spacing: var(--jc-tracking-wide);
+    text-transform: uppercase;
+    color: var(--jc-text-muted);
+    transition: color var(--jc-transition-theme), border-color var(--jc-transition-theme);
+}
+
+/* On the tinted ground the dashed rail has to come from the accent family to stay visible. */
+.jc-conv[aria-current="true"] .jc-conv__badge {
+    border-color: var(--jc-accent-line);
+    color: var(--jc-accent-hover);
+}
+
+/* --- Where the column stops knowing when ---------------------------------
+ *
+ * Rows are ordered by when this session watched them being used, and the ones it never watched have
+ * nothing to order by, so they fall to the bottom in a block with an empty trailing edge on every
+ * row. Two readers of the same capture misread that run in two different ways - as a list that had
+ * failed to finish loading, and as a claim that the rows below were the oldest - and the column had
+ * no way of saying it was neither.
+ *
+ * Typeset below the group heading rather than like it: a heading files rows under a category, and
+ * these rows are not a category, they are the same conversations with one fact missing. So the rule
+ * carries the weight and the words are set at the faintest legible tier, sized to sit between two
+ * rows rather than to start a section.
+ * ------------------------------------------------------------------------ */
+
+.jc-seam {
+    display: flex;
+    align-items: center;
+    gap: var(--jc-space-xs);
+    margin-block: var(--jc-space-xs) var(--jc-space-2xs);
+    padding-inline: var(--jc-rail-gutter);
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text-muted);
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-seam__label {
+    flex: 0 0 auto;
+}
+
+/* The rule runs from the label to the column's edge, so the seam reads as a boundary and not a row. */
+.jc-seam::after {
+    content: "";
+    flex: 1 1 auto;
+    height: 1px;
+    background: var(--jc-border);
+    transition: background-color var(--jc-transition-theme);
 }
 
 .jc-sidebar__empty {
@@ -702,9 +1062,10 @@ body {
 }
 
 /*
- * Which rows are not real is still said out loud - in the About dialog the user menu opens, where a
- * build note belongs. A paragraph of apology pinned above the fold in the navigation column is
- * chrome the reader has to read past on every visit to learn something once.
+ * There is no footnote under the list any more, and nothing for one to explain: every row in the
+ * column describes a conversation the agent really holds. What the store cannot record - folders the
+ * reader chooses, tags, a modification time - is said once in the About dialog rather than pinned
+ * above the fold in the navigation column, which is chrome to read past on every visit.
  */
 
 /* --- The user menu ------------------------------------------------------- */
@@ -717,7 +1078,7 @@ body {
  */
 .jc-sidebar__foot {
     flex: 0 0 auto;
-    padding: var(--jc-space-xs) var(--jc-space-s) var(--jc-space-s);
+    padding: var(--jc-space-xs) var(--jc-rail-gutter) var(--jc-space-s);
 }
 
 .jc-user__trigger {
@@ -727,7 +1088,8 @@ body {
     width: 100%;
     box-sizing: border-box;
     margin: 0;
-    padding: var(--jc-space-2xs);
+    /* The avatar is this row's leading glyph and lands on the rail's ink line with every other. */
+    padding: var(--jc-space-2xs) var(--jc-rail-gutter);
     border: 0;
     background: transparent;
     font-family: inherit;
@@ -739,6 +1101,11 @@ body {
 
 .jc-user__trigger:hover {
     background: var(--jc-surface-raised);
+}
+
+/* The same two-step a conversation row uses, because it is the same kind of chip in the same rail. */
+.jc-user__trigger:active {
+    background: var(--jc-border);
 }
 
 .jc-glyph.jc-user__avatar {
@@ -787,16 +1154,101 @@ body {
     color: var(--jc-text-faint);
 }
 
-/* --- Focus, once, for every control the shell adds ----------------------- */
+/* --- Focus, once, for every control this stylesheet paints ---------------- */
 
+/*
+ * One ring, declared once, for every control that is not a Vaadin component - those two carry the
+ * same tokens on [focus-ring] in section 9, because Vaadin exposes keyboard focus as an attribute.
+ *
+ * The list is the whole point and it is why it now reaches outside the sidebar it was written in.
+ * Three controls added to the transcript and the prose in later rounds - the jump-to-latest pill,
+ * the code block's copy control and any link inside an answer - were never added here, so what they
+ * drew on keyboard focus was Chrome's own ring rather than this product's: measured on the running
+ * app, rgb(0, 95, 204) at 1px in light and rgb(153, 200, 255) in dark. A blue hairline is not a
+ * design decision anyone made, and on the jump pill it lands on a floating, shadowed control where
+ * a 1px UA ring is least visible of all.
+ */
+.jc-skip-link:focus-visible,
 .jc-new-chat:focus-visible,
 .jc-group__head:focus-visible,
 .jc-conv:focus-visible,
 .jc-user__trigger:focus-visible,
 .jc-menu__item:focus-visible,
-.jc-dialog__close:focus-visible {
+.jc-starter:focus-visible,
+.jc-msg-action:focus-visible,
+.jc-edit-button:focus-visible,
+.jc-dialog__close:focus-visible,
+.jc-jump__button:focus-visible,
+.jc-code__copy:focus-visible,
+.jc-prose a:focus-visible {
     outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
     outline-offset: 1px;
+}
+
+/*
+ * A link is set in running text, so its ring is drawn tight to the words and given the corner the
+ * surrounding prose has none of. Everything else about it is the shared ring above.
+ */
+.jc-prose a:focus-visible {
+    border-radius: var(--jc-radius-s);
+    outline-offset: 2px;
+}
+
+/* --- The way past the navigation ----------------------------------------- */
+
+/*
+ * The first stop in the tab order and, until it is reached, invisible.
+ *
+ * Held off the top of the viewport by a transform rather than by display:none or visibility:hidden,
+ * which are the two ways of hiding a skip link that also take it out of the tab order - a skip link
+ * that cannot be focused is a skip link that does nothing. It is painted as a real control the
+ * moment it has focus, above everything including the drawer, because the reader who has just found
+ * it has never seen it before and is being asked to trust it.
+ */
+.jc-skip-link {
+    position: fixed;
+    z-index: 60;
+    top: var(--jc-space-xs);
+    inset-inline-start: var(--jc-space-xs);
+    padding: var(--jc-space-2xs) var(--jc-space-m);
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-text);
+    text-decoration: none;
+    background: var(--jc-surface-raised);
+    border: 1px solid var(--jc-border-strong);
+    border-radius: var(--jc-radius-m);
+    box-shadow: var(--jc-shadow-m);
+    /* Off the top by its own height and then some, so no part of it clips into the bar. */
+    transform: translateY(calc(-100% - var(--jc-space-l)));
+    transition: transform var(--jc-transition-fast),
+                background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme),
+                color var(--jc-transition-theme);
+}
+
+.jc-skip-link:focus-visible {
+    transform: none;
+}
+
+/* On screen it is an ordinary control and answers like one; off screen neither state can be seen. */
+.jc-skip-link:hover {
+    background: var(--jc-surface-sunken);
+    border-color: var(--jc-text-faint);
+}
+
+.jc-skip-link:active {
+    background: var(--jc-border);
+    border-color: var(--jc-text-faint);
+}
+
+/*
+ * The region the link lands on. It is focusable only so the fragment can move the caret there, and
+ * a reader who arrives that way has been taken somewhere deliberately - a ring around the whole
+ * content region would be the interface shouting about its own plumbing.
+ */
+.jc-main__content:focus {
+    outline: none;
 }
 
 /* --- The scrim ----------------------------------------------------------- */
@@ -875,8 +1327,16 @@ body {
     content: "";
     position: absolute;
     inset-inline: 0;
-    top: 100%;
-    height: var(--jc-space-l);
+    /*
+     * The +1px is the border. An absolutely positioned box resolves a percentage top against its
+     * containing block's *padding* box, so `top: 100%` starts the fade at the inner edge of the
+     * bar's own border-bottom and paints --jc-surface straight over it. The bar therefore had no
+     * visible edge at any width, and the rule that is meant to run unbroken from the sidebar head
+     * across the shell stopped at the divider - covering the 19% the sidebar occupies and no more.
+     */
+    top: calc(100% + 1px);
+    /* Two line boxes, and see --jc-scroll-mask for why one is not enough. */
+    height: var(--jc-scroll-mask);
     background: var(--jc-surface);
     -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
     mask-image: linear-gradient(to bottom, #000, transparent);
@@ -891,7 +1351,13 @@ body {
     line-height: var(--jc-line-height-tight);
 }
 
+/*
+ * An h1, not a span, so the page has a heading to navigate by - which means the browser's own
+ * heading margins have to go, or the bar grows by 21px and the two lines of the heading block stop
+ * sharing a baseline grid with the toggle beside them.
+ */
 .jc-topbar__title {
+    margin: 0;
     font-size: var(--jc-font-size-m);
     font-weight: var(--jc-font-weight-medium);
     letter-spacing: var(--jc-tracking-tight);
@@ -902,9 +1368,17 @@ body {
     transition: color var(--jc-transition-theme);
 }
 
-/* The model actually answering. Absent when nothing is configured - see MainLayout. */
+/*
+ * The model actually answering. Absent when nothing is configured - see MainLayout.
+ *
+ * One tier up from the smallest type in the palette, which is where it used to sit. Which model
+ * answered is the single most consequential fact on the screen for anyone running more than one,
+ * and it was set at 12px in the muted tone - the lowest-emphasis tier the stylesheet has, at every
+ * viewport including 390px. It is still quieter than the thread name above it, because the thread
+ * name is what the reader navigated by; it is no longer the quietest thing here.
+ */
 .jc-topbar__subtitle {
-    font-size: var(--jc-font-size-xs);
+    font-size: var(--jc-font-size-s);
     color: var(--jc-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -916,8 +1390,15 @@ body {
     display: none;
 }
 
+/*
+ * The same optical correction as the per-turn controls, at the other end of the bar. The theme
+ * control's glyph stopped 12px inside the column's trailing edge while every leading edge on the
+ * screen held its axis to 0, so the bar looked narrower on one side than the other. Only the
+ * button's own clearance is taken back; the measure keeps its gutter.
+ */
 .jc-topbar__actions {
     margin-inline-start: auto;
+    margin-inline-end: calc(-1 * var(--jc-icon-button-optical-inset));
     display: flex;
     align-items: center;
     gap: var(--jc-space-2xs);
@@ -1061,6 +1542,11 @@ body {
     border-color: var(--jc-text-faint);
 }
 
+.jc-dialog__close:active {
+    background: var(--jc-border);
+    border-color: var(--jc-text-faint);
+}
+
 /*
  * Vaadin's overlays, brought down to this UI's density.
  *
@@ -1181,6 +1667,87 @@ vaadin-dialog::part(footer) {
     padding-block: var(--jc-space-xl) var(--jc-space-l);
 }
 
+/* --- Jump to the latest message ----------------------------------------
+ *
+ * The counterweight to auto-scroll. The transcript follows an answer only while the reader is at
+ * the bottom of it, which is right nine times in ten and leaves the tenth - a reader who scrolled
+ * up on purpose - with an answer growing somewhere below the fold and nothing to say so. This is
+ * that something, and it is the one control on the page that appears because of where the reader
+ * is rather than because of what the agent said.
+ *
+ * Shown by an attribute the client owns, so appearing and disappearing costs nothing on a container
+ * that is being scrolled.
+ * ----------------------------------------------------------------------- */
+
+.jc-jump {
+    position: sticky;
+    bottom: var(--jc-space-m);
+    z-index: 2;
+    display: flex;
+    justify-content: center;
+    /* Zero height: it hovers over the transcript rather than adding a row to the end of it. */
+    height: 0;
+    pointer-events: none;
+}
+
+.jc-jump__button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    transform: translateY(-100%);
+    border: 1px solid var(--jc-border-strong);
+    border-radius: var(--jc-radius-pill);
+    background: var(--jc-surface-raised);
+    color: var(--jc-text-muted);
+    box-shadow: var(--jc-shadow-s);
+    cursor: pointer;
+    /*
+     * Invisible, unclickable and unreachable together. Opacity and pointer-events covered the
+     * pointer: a transparent 36px target floating over the last message is a click the reader
+     * cannot have intended and cannot see they made. Neither of them touches the tab order, and
+     * measured on the running app this button reported tabIndex 0 and accepted focus while painted
+     * at opacity 0 - so a keyboard reader tabbing out of the transcript landed on a control that
+     * was not there, and once the ring above applied to it they would have watched it draw around
+     * nothing. visibility is what removes an element from the tab order, so visibility is what this
+     * uses, delayed on the way out so the fade still plays.
+     */
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity var(--jc-transition-fast),
+                visibility 0s linear var(--jc-transition-fast),
+                color var(--jc-transition-fast),
+                border-color var(--jc-transition-fast),
+                transform var(--jc-transition-fast),
+                background-color var(--jc-transition-theme);
+}
+
+.jc-transcript[data-pinned="false"] .jc-jump__button {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transition-delay: 0s;
+}
+
+.jc-jump__button:hover {
+    border-color: var(--jc-text-faint);
+    color: var(--jc-text);
+    background: var(--jc-surface-sunken);
+}
+
+/*
+ * The pill is already translated a full height up off the composer, so the press has to compose
+ * with that rather than replace it - a bare scale() here would drop the control back down onto the
+ * composer for the length of the click.
+ */
+.jc-jump__button:active {
+    transform: translateY(-100%) scale(0.94);
+    box-shadow: var(--jc-shadow-xs);
+    background: var(--jc-border);
+}
+
 /* --- Empty state ------------------------------------------------------- */
 
 .jc-empty {
@@ -1197,7 +1764,9 @@ vaadin-dialog::part(footer) {
     margin-bottom: var(--jc-space-xs);
 }
 
+/* An h2 under the shell's h1, for the same reason, with the same margin to undo. */
 .jc-empty__title {
+    margin: 0;
     font-size: var(--jc-font-size-l);
     font-weight: var(--jc-font-weight-medium);
     letter-spacing: var(--jc-tracking-tight);
@@ -1209,6 +1778,75 @@ vaadin-dialog::part(footer) {
     color: var(--jc-text-muted);
     max-width: 28rem;
     transition: color var(--jc-transition-theme);
+}
+
+/* --- Starters ------------------------------------------------------------
+ *
+ * The empty state's payload. The composer is anchored at the foot of the shell and stays there
+ * once the first message lands, which is deliberate - a primary control that moves the moment it
+ * is used is a control the reader has to find twice - but it left ~360px of dead column between
+ * the greeting and the field on a desktop, and 471px on a tablet, holding nothing.
+ *
+ * Chips rather than cards: a card implies a destination, and each of these is a sentence that ends
+ * up in the field two hundred pixels below. They wrap rather than scroll, so a phone shows three
+ * short lines instead of a row with a hidden third item.
+ * ------------------------------------------------------------------------ */
+
+/*
+ * On the column's axis, and wrapping from it.
+ *
+ * These were centred inside a 34rem box of their own, which put the group on neither the shell's
+ * leading edge nor anything else: the first row spanned 611..1108 and the second 743..975, two
+ * runs centred on 859.5 while every other leading edge on the screen was on 516. The greeting
+ * above them is centred because it is one short line and reads as a title; a row of controls that
+ * wraps is a list, and a list that wraps has to start where the next line will start or the reader
+ * cannot tell it wrapped rather than being three separate things.
+ *
+ * The group takes the full measure and starts on its leading edge. It still wraps - the three
+ * labels total 738px against a 592px column - but it now wraps the way a paragraph does.
+ */
+.jc-starters {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-self: stretch;
+    gap: var(--jc-space-xs);
+    margin-top: var(--jc-space-m);
+}
+
+/*
+ * The one control in the sheet drawn with --jc-border-control rather than a surface hairline.
+ *
+ * A chip is identified by its edge - there is no fill step worth seeing behind it (raised against
+ * the page ground is 1.05:1 in light and 1.09:1 in dark), so the outline is not decoration around a
+ * shape the reader can already see - it is the shape. That puts it inside WCAG 1.4.11 rather than
+ * inside the text-only exemption, and --jc-border-strong measured 1.35:1 here in light and 1.49:1
+ * in dark. The fill goes with it: an outlined pill on the page ground is one object, where an
+ * outlined pill on an invisible fill was two that happened to coincide.
+ */
+.jc-starter {
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-s);
+    border: 1px solid var(--jc-border-control);
+    border-radius: var(--jc-radius-pill);
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    line-height: 1.9;
+    color: var(--jc-text);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), border-color var(--jc-transition-fast),
+                color var(--jc-transition-fast);
+}
+
+.jc-starter:hover {
+    border-color: var(--jc-accent);
+    background: var(--jc-accent-soft);
+}
+
+.jc-starter:active {
+    border-color: var(--jc-accent);
+    background: var(--jc-accent-soft-active);
 }
 
 /* --- Messages ----------------------------------------------------------
@@ -1297,15 +1935,21 @@ vaadin-dialog::part(footer) {
     vertical-align: text-bottom;
     width: 0.5rem;
     height: 1em;
-    margin-left: 0.125rem;
+    margin-left: var(--jc-space-3xs);
     border-radius: 1px;
     background: var(--jc-accent);
     animation: jc-caret 1s steps(2, jump-none) infinite;
 }
 
+/*
+ * A trough, not an extinction. At 0.15 the caret measured 1.26:1 against the bubble in dark, which
+ * means the one cue that sits where the answer is actually growing was invisible for half of every
+ * second. The blink still reads as a blink at 0.4 - it is the change the eye catches, not the floor
+ * - and the reader waiting at the end of the line always has something there to wait at.
+ */
 @keyframes jc-caret {
     50% {
-        opacity: 0.15;
+        opacity: 0.4;
     }
 }
 
@@ -1334,6 +1978,261 @@ vaadin-dialog::part(footer) {
     font-size: var(--jc-font-size-xs);
     color: var(--jc-text-muted);
     transition: color var(--jc-transition-theme);
+}
+
+/*
+ * The wait before the first token, which is the longest silence in the exchange. An empty bubble
+ * with a caret blinking in it is indistinguishable from an answer that arrived empty, so the turn
+ * says what it is doing until it has something to say instead. The caret is suppressed while this
+ * is up: two things moving in one bubble reads as two things happening.
+ */
+.jc-message__thinking {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--jc-space-2xs);
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text-muted);
+    transition: color var(--jc-transition-theme);
+}
+
+.jc-message--thinking .jc-message__bubble::after {
+    content: none;
+}
+
+/* --- Per-turn controls --------------------------------------------------
+ *
+ * A row of small icon-only buttons under each closed turn: copy, and the one control that can act
+ * on the conversation from here - answer again on the assistant's side, edit and ask again on the
+ * reader's.
+ *
+ * Painted at rest, on every turn.
+ *
+ * These used to be held at opacity 0 until the turn was hovered or something inside it took focus,
+ * with the last turn as the exception. Two things were wrong with that. A control revealed only by
+ * hovering is a control a reader has to already know is there, and this row is where copy, retry
+ * and edit live - the answer to "what can I do with this answer?" was itself hidden behind the
+ * question. And the row was already in flow at opacity 0, so it was reserving its own height on
+ * every turn and paying the layout cost of being visible while paying none of the benefit.
+ *
+ * The chrome is what moves now: the glyphs rest in the muted tone, which clears AA on every ground
+ * they land on, and hover adds the plate and the full text tone. Nothing about the geometry changes
+ * between the two, so nothing shifts under the pointer.
+ * ------------------------------------------------------------------------ */
+
+.jc-message__actions {
+    display: flex;
+    gap: var(--jc-space-3xs);
+    /* On top of the body's own flex gap: 12px between the last line of prose and the controls
+     * about it, which is enough for the row to read as a footer rather than as a fourth line. */
+    margin-block-start: var(--jc-space-xs);
+    transition: opacity var(--jc-transition-fast);
+}
+
+/*
+ * Ink on the axis, not the box on the axis.
+ *
+ * One optical axis runs down this layout: the header title, the first word of every answer and the
+ * composer's border box all begin on it. The per-turn controls were the row that missed it, by
+ * exactly the clearance an icon button leaves around its glyph. Aligning the button's box put the
+ * mark 9px inboard of every other leading edge on screen, which is a misalignment a reader can see
+ * without being able to name. Taken back here rather than by shrinking the target, which is the one
+ * part of this that must not get smaller.
+ *
+ * The amount is --jc-action-optical-inset, which is derived from the target size and the glyph's
+ * ink rather than measured once and typed in. Typed in, it was right for a 16px glyph and 2px wrong
+ * for the 18px one - see the token.
+ *
+ * The reader's own turns are mirrored, because their controls answer to the trailing edge of their
+ * bubble rather than to the leading axis.
+ */
+.jc-message[data-role="assistant"] .jc-message__actions {
+    margin-inline-start: calc(-1 * var(--jc-action-optical-inset));
+}
+
+.jc-message[data-role="user"] .jc-message__actions {
+    margin-inline-end: calc(-1 * var(--jc-action-optical-inset));
+}
+
+/*
+ * The turn under the pointer lifts its whole row a tone, so pointing anywhere in an answer says
+ * which answer these controls belong to before the pointer has reached them. It is a colour change
+ * on the glyphs, not a reveal: the row is painted either way.
+ */
+.jc-message:hover .jc-msg-action,
+.jc-message:focus-within .jc-msg-action {
+    color: var(--jc-text);
+}
+
+.jc-msg-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--jc-action-size);
+    height: var(--jc-action-size);
+    margin: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--jc-radius-s);
+    background: transparent;
+    color: var(--jc-text-muted);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), border-color var(--jc-transition-fast),
+                color var(--jc-transition-fast);
+}
+
+.jc-msg-action:hover {
+    border-color: var(--jc-border);
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+}
+
+.jc-msg-action:active {
+    background: var(--jc-border);
+}
+
+/*
+ * 18px, not the 14px these opened at and not the 16px they were corrected to. A glyph is the whole
+ * of what an icon-only control says, and at 14px with a 1.5-unit stroke the copy mark read as a
+ * filled chip rather than as two sheets.
+ *
+ * The second correction is because a stroked glyph does not fill its own box: measured on screen,
+ * the ink inside a 16px viewBox came to 13px, against the 16px of ink the product this is compared
+ * with draws. Sizing the box to 18px puts the ink at 15-16 and matches it, without touching the
+ * 30px target, which is the part of this that must not shrink.
+ */
+.jc-msg-action .jc-glyph {
+    width: var(--jc-action-glyph);
+    height: var(--jc-action-glyph);
+}
+
+/*
+ * The copy control carries both of its glyphs in the DOM and shows one at a time. The confirmation
+ * is therefore a class flip rather than a re-render: the browser already holds the tick, so the
+ * feedback lands in the same frame as the click instead of after a round trip to the server.
+ */
+/*
+ * Two class names deep on purpose. `.jc-glyph` sets its own display in section 10, which is later
+ * in this file, so a single-class rule here loses the cascade and both glyphs paint at once - which
+ * is exactly what shipped the first time this was written.
+ */
+.jc-msg-action .jc-msg-action__icon--done {
+    display: none;
+}
+
+.jc-msg-action[data-copied="true"] {
+    color: var(--jc-accent);
+}
+
+.jc-msg-action[data-copied="true"] .jc-msg-action__icon {
+    display: none;
+}
+
+.jc-msg-action[data-copied="true"] .jc-msg-action__icon--done {
+    display: inline-flex;
+}
+
+/* --- Editing a message in place ----------------------------------------
+ *
+ * The field opens where the message is, not in the composer at the foot of the page. A draft that
+ * appears 500px from the thing it replaces makes the reader check twice which one they are
+ * changing, and leaves the original sitting in the transcript as though it were still part of the
+ * conversation it is about to be removed from.
+ * ------------------------------------------------------------------------ */
+
+.jc-message--editing .jc-message__body {
+    align-items: stretch;
+}
+
+.jc-message__edit {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-xs);
+    width: 100%;
+}
+
+/*
+ * Left to Vaadin's defaults this field arrives on Lumo's own grey, which is not a tone this palette
+ * contains - a blue-grey slab inside a warm transcript, and the one surface on the page that does
+ * not belong to the design system. The tokens below put it back on the raised tone the rest of the
+ * shell's inputs sit on, and hand the focus ring to the same accent everything else uses.
+ */
+.jc-message__editor {
+    width: 100%;
+    --vaadin-input-field-background: var(--jc-surface-raised);
+    --vaadin-input-field-border-width: 1px;
+    --vaadin-input-field-border-color: var(--jc-border-strong);
+    --vaadin-input-field-border-radius: var(--jc-radius-m);
+    --vaadin-input-field-hover-highlight-opacity: 0;
+    --vaadin-input-field-value-color: var(--jc-text);
+    --vaadin-input-field-value-font-size: var(--jc-font-size-m);
+    --vaadin-input-field-height: auto;
+}
+
+.jc-message__editor > textarea {
+    font-family: var(--jc-font-sans);
+    font-size: var(--jc-font-size-m);
+    line-height: var(--jc-line-height-body);
+    max-height: min(40vh, 14rem);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--jc-border-strong) transparent;
+}
+
+.jc-message__edit-controls {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--jc-space-xs);
+}
+
+/*
+ * Two words, two weights. Discarding is the safe half and stays quiet; asking again spends a model
+ * call and is the one that carries the accent - the same rule the composer's own send button
+ * follows, so there is one thing on screen at a time that looks like it costs something.
+ */
+.jc-edit-button {
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-s);
+    min-height: 1.875rem;
+    border: 1px solid var(--jc-border-strong);
+    border-radius: var(--jc-radius-m);
+    background: var(--jc-surface-raised);
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), border-color var(--jc-transition-fast),
+                color var(--jc-transition-fast);
+}
+
+.jc-edit-button:hover {
+    border-color: var(--jc-text-faint);
+    background: var(--jc-surface-sunken);
+}
+
+.jc-edit-button--primary {
+    border-color: var(--jc-accent);
+    background: var(--jc-accent);
+    color: var(--jc-accent-contrast);
+}
+
+.jc-edit-button:active {
+    background: var(--jc-border);
+    border-color: var(--jc-text-faint);
+}
+
+.jc-edit-button--primary:hover {
+    border-color: var(--jc-accent-hover);
+    background: var(--jc-accent-hover);
+}
+
+/*
+ * Declared after the shared press above so the primary keeps the accent ramp rather than falling
+ * back to the neutral one; it confirms a submit, and a confirm that greys on press reads as a
+ * cancel.
+ */
+.jc-edit-button--primary:active {
+    border-color: var(--jc-accent-active);
+    background: var(--jc-accent-active);
 }
 
 /* ==========================================================================
@@ -1408,16 +2307,28 @@ vaadin-dialog::part(footer) {
     font-style: italic;
 }
 
+/*
+ * A link is a control, so it transitions on the interaction duration rather than the theme one -
+ * the same call every other hoverable thing in this sheet makes. On the theme token a pointer moving
+ * across a paragraph of links dragged a 260ms colour fade behind it, which reads as lag rather than
+ * as response.
+ */
 .jc-prose a {
     color: var(--jc-accent);
     text-decoration: underline;
     text-decoration-thickness: 1px;
     text-underline-offset: 0.3em;
-    transition: color var(--jc-transition-theme);
+    transition: color var(--jc-transition-fast),
+                text-decoration-thickness var(--jc-transition-fast);
 }
 
 .jc-prose a:hover {
     color: var(--jc-accent-hover);
+    text-decoration-thickness: 2px;
+}
+
+.jc-prose a:active {
+    color: var(--jc-accent-active);
 }
 
 .jc-prose code {
@@ -1431,25 +2342,198 @@ vaadin-dialog::part(footer) {
                 border-color var(--jc-transition-theme);
 }
 
-.jc-prose pre {
-    margin-block: var(--jc-space-s);
-    padding: var(--jc-space-s);
+/* --- Code blocks -------------------------------------------------------
+ *
+ * A snippet is a card in the middle of the prose, not a tinted paragraph. It carries a bar naming
+ * the language and offering to copy it, a numbered gutter, and its own scroll region - the one
+ * place in this UI where horizontal scrolling is right, because wrapping a line of code changes
+ * what the reader is looking at.
+ * ----------------------------------------------------------------------- */
+
+.jc-code {
+    /* A figure's own margins are set by the browser and are far wider than this rhythm. */
+    margin: var(--jc-space-m) 0;
     border: 1px solid var(--jc-border);
     border-radius: var(--jc-radius-m);
-    background: var(--jc-surface-sunken);
-    /* A code block is the one place horizontal scroll is right; the page must never scroll. */
-    overflow-x: auto;
-    white-space: pre;
+    background: var(--jc-code-surface);
+    /* Clips the scroll region to the radius, so the corners survive a long line. */
+    overflow: hidden;
     transition: background-color var(--jc-transition-theme),
                 border-color var(--jc-transition-theme);
 }
 
-.jc-prose pre code {
+/*
+ * The bar sits outside the scroll region on purpose: a language name that scrolls sideways with
+ * line 40 of the snippet is a label that is not there when it is wanted.
+ */
+.jc-code__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--jc-space-s);
+    padding: var(--jc-space-2xs) var(--jc-space-2xs) var(--jc-space-2xs) var(--jc-space-s);
+    border-bottom: 1px solid var(--jc-border);
+    background: var(--jc-code-head);
+    transition: background-color var(--jc-transition-theme),
+                border-color var(--jc-transition-theme);
+}
+
+.jc-code__lang {
+    font-family: var(--jc-font-mono);
+    font-size: var(--jc-font-size-xs);
+    letter-spacing: var(--jc-tracking-wide);
+    text-transform: uppercase;
+    color: var(--jc-text-muted);
+}
+
+.jc-code__copy {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--jc-space-2xs);
+    padding: var(--jc-space-3xs) var(--jc-space-xs);
+    border: 1px solid transparent;
+    border-radius: var(--jc-radius-s);
+    background: none;
+    font: inherit;
+    font-size: var(--jc-font-size-xs);
+    color: var(--jc-text-muted);
+    cursor: pointer;
+    transition: color var(--jc-transition-fast),
+                background-color var(--jc-transition-fast),
+                border-color var(--jc-transition-fast);
+}
+
+.jc-code__copy:hover {
+    border-color: var(--jc-border-strong);
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+}
+
+.jc-code__copy:active {
+    border-color: var(--jc-text-faint);
+    background: var(--jc-border);
+    color: var(--jc-text);
+}
+
+.jc-code__copy .jc-glyph {
+    width: 0.875rem;
+    height: 0.875rem;
+}
+
+/*
+ * Both states are in the markup and one of them is hidden, so the confirmation costs no round trip
+ * and builds no markup at the browser. Same shape as the message controls above.
+ */
+.jc-code__copy .jc-code__icon--done,
+.jc-code__copy .jc-code__copy-text--done {
+    display: none;
+}
+
+.jc-code__copy[data-copied="true"] {
+    color: var(--jc-accent);
+}
+
+.jc-code__copy[data-copied="true"] .jc-code__icon {
+    display: none;
+}
+
+.jc-code__copy[data-copied="true"] .jc-code__icon--done {
+    display: inline-flex;
+}
+
+.jc-code__copy[data-copied="true"] .jc-code__copy-text {
+    display: none;
+}
+
+.jc-code__copy[data-copied="true"] .jc-code__copy-text--done {
+    display: inline;
+}
+
+.jc-prose .jc-code pre {
+    margin: 0;
+    /* No inline padding: the gutter supplies the leading edge and must be able to stick to it. */
+    padding-block: var(--jc-space-xs);
+    padding-inline: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    overflow-x: auto;
+    white-space: pre;
+    counter-reset: jc-code-line;
+    scrollbar-width: thin;
+    scrollbar-color: var(--jc-border-strong) transparent;
+}
+
+.jc-prose .jc-code code {
+    display: block;
     padding: 0;
     border: 0;
     border-radius: 0;
     background: none;
-    font-size: inherit;
+    font-size: var(--jc-font-size-s);
+    line-height: 1.6;
+}
+
+/*
+ * max-content with a 100% floor: a line has to span the whole scrollable width, or the sticky
+ * gutter below has nothing to stay put against and scrolls away with the text.
+ */
+.jc-code__line {
+    display: block;
+    width: max-content;
+    min-width: 100%;
+    padding-inline-end: var(--jc-space-m);
+    counter-increment: jc-code-line;
+}
+
+/*
+ * Numbers as generated content, which is what keeps them out of a copy: neither the delegated copy
+ * control nor a hand-made selection can pick up text that is not in the DOM.
+ */
+.jc-code__line::before {
+    content: counter(jc-code-line);
+    position: sticky;
+    left: 0;
+    display: inline-block;
+    width: 2ch;
+    padding-inline: var(--jc-space-s) var(--jc-space-m);
+    text-align: end;
+    color: var(--jc-text-faint);
+    background: var(--jc-code-surface);
+    user-select: none;
+    transition: background-color var(--jc-transition-theme);
+}
+
+/* --- Syntax ------------------------------------------------------------ */
+
+.jc-tok--comment {
+    color: var(--jc-code-comment);
+    font-style: italic;
+}
+
+.jc-tok--keyword {
+    color: var(--jc-code-keyword);
+}
+
+.jc-tok--string {
+    color: var(--jc-code-string);
+}
+
+.jc-tok--number {
+    color: var(--jc-code-number);
+}
+
+.jc-tok--type {
+    color: var(--jc-code-type);
+}
+
+.jc-tok--function {
+    color: var(--jc-code-function);
+}
+
+.jc-tok--meta {
+    color: var(--jc-code-type);
+    font-style: italic;
 }
 
 .jc-prose blockquote {
@@ -1470,20 +2554,43 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * Held to the measure rather than given its own horizontal scroll: turning a table into a scroll
- * container costs it its row alignment, since a block-level table no longer sizes its header and
- * its body to the same columns. Columns compress and cells wrap instead.
+ * The scroll belongs to the wrapper, not to the table.
+ *
+ * A table given `display: block; overflow-x: auto` stops being a table for layout purposes: its
+ * header and its body no longer size to the same columns, so what is gained in reach is lost in
+ * alignment. A wrapper leaves the table a table and takes the overflow itself. See Markdown.java,
+ * which emits it.
+ *
+ * The interval is the wrapper's, so a table and the code panel above it close on the same rhythm.
  */
-.jc-prose table {
+.jc-table {
+    margin-block: var(--jc-space-m);
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--jc-border-strong) transparent;
+}
+
+/*
+ * max-width: none is what makes the wrapper's scroll reachable at all. Clamped to the wrapper, a
+ * wide table has nowhere to go but inward, and the columns collapse instead of the wrapper
+ * scrolling - measured at 45px a column across twelve columns before this existed.
+ */
+.jc-prose .jc-table > table {
     width: auto;
-    max-width: 100%;
-    margin-block: var(--jc-space-s);
+    max-width: none;
+    margin-block: 0;
     border-collapse: collapse;
     font-size: var(--jc-font-size-s);
 }
 
 .jc-prose th,
 .jc-prose td {
+    /*
+     * A floor rather than a width. It is what decides whether a wide table overflows its wrapper -
+     * and so scrolls - or collapses inside it, because a column with no floor will give up as much
+     * width as the container asks for and wrap a two-word heading onto four lines.
+     */
+    min-width: 5rem;
     padding: var(--jc-space-2xs) var(--jc-space-xs);
     border: 1px solid var(--jc-border);
     text-align: start;
@@ -1497,6 +2604,94 @@ vaadin-dialog::part(footer) {
     transition: background-color var(--jc-transition-theme);
 }
 
+/* --- Maths -------------------------------------------------------------
+ *
+ * Typeset from elements rather than from a layout engine, so what is here is the small part of the
+ * job that HTML can do honestly: italic variables, upright operator names, real superscripts and
+ * subscripts, and stacked boxes for fractions and roots. Anything the renderer cannot draw never
+ * reaches these rules - it stays the source the model sent. See Latex.java for where that line is.
+ * ----------------------------------------------------------------------- */
+
+.jc-math {
+    /*
+     * A serif face for maths, against the sans the rest of the page is set in. That is not decoration:
+     * the italic serif letterform is what tells a reader that x is a variable rather than a word.
+     */
+    font-family: "STIX Two Math", "Latin Modern Math", Cambria, Georgia, serif;
+    font-size: 1.05em;
+    white-space: normal;
+}
+
+.jc-math--display {
+    display: block;
+    margin-block: var(--jc-space-m);
+    /* Centred and given its own scroll: a long formula must not widen the answer around it. */
+    text-align: center;
+    overflow-x: auto;
+    font-size: 1.15em;
+}
+
+.jc-math__var {
+    font-style: italic;
+}
+
+/* An operator name is set upright; sin drawn as three italic variables is s times i times n. */
+.jc-math__fn {
+    font-style: normal;
+    padding-inline-end: 0.15em;
+}
+
+.jc-math__text,
+.jc-math__text .jc-math__var {
+    font-style: normal;
+    font-family: var(--jc-font-sans);
+    font-size: 0.95em;
+}
+
+.jc-math__bold {
+    font-weight: var(--jc-font-weight-strong);
+}
+
+/* Zero line height so a script cannot push the line it sits on away from its neighbours. */
+.jc-math sup,
+.jc-math sub {
+    font-size: 0.72em;
+    line-height: 0;
+}
+
+.jc-math__frac {
+    display: inline-flex;
+    flex-direction: column;
+    vertical-align: middle;
+    margin-inline: 0.15em;
+    text-align: center;
+    font-size: 0.95em;
+}
+
+.jc-math__num {
+    padding-inline: 0.3em;
+}
+
+.jc-math__den {
+    padding-inline: 0.3em;
+    /* currentColor, so the rule is the same ink as the numbers on either side of it. */
+    border-top: 1px solid currentColor;
+}
+
+.jc-math__sqrt {
+    display: inline-flex;
+    align-items: stretch;
+}
+
+.jc-math__radical {
+    padding-inline-end: 0.05em;
+}
+
+.jc-math__radicand {
+    padding-inline: 0.1em;
+    border-top: 1px solid currentColor;
+}
+
 /* ==========================================================================
  * 8. Composer
  * ========================================================================== */
@@ -1504,10 +2699,19 @@ vaadin-dialog::part(footer) {
 .jc-composer {
     position: relative;
     flex: 0 0 auto;
-    /* Same weight as the rule under the header; the shell has one hairline colour, not two. */
+    /*
+     * Same weight and tone as the rule under the header. The two bands that frame the transcript
+     * share one edge colour; the sidebar's divider is deliberately a step stronger, because it
+     * separates two scroll regions rather than two bars of the same one.
+     */
     border-top: 1px solid var(--jc-border);
     background: var(--jc-surface-sunken);
-    padding-block: var(--jc-space-s) var(--jc-space-m);
+    /*
+     * Even, not tighter at the top. At 12px the field sat 9px under the hairline with 45px of band
+     * unused beneath it, and the 3px focus halo came within 6px of the divider - close enough that
+     * the ring read as touching the edge of the band rather than as sitting inside it.
+     */
+    padding-block: var(--jc-space-m);
     transition: background-color var(--jc-transition-theme),
                 border-color var(--jc-transition-theme);
 }
@@ -1516,13 +2720,21 @@ vaadin-dialog::part(footer) {
  * Scrim over the last strip of the transcript, so text fades out into the composer instead of
  * being cut by a hairline. It sits above the band, overlapping the scroller, and takes no pointer
  * events so it never eats a click on the last turn.
+ *
+ * The +1px is the same correction the header's fade carries, and for the same reason: a percentage
+ * offset resolves against the padding box, so `bottom: 100%` puts the scrim's fully opaque last row
+ * on the border row and paints it out. The rule above declares a hairline; without this the bottom
+ * of the shell was a 1.08:1 fill step in light and 1.05:1 in dark while the top of it was a real
+ * 1px edge - the precise asymmetry that comment says it is avoiding.
  */
 .jc-composer::before {
     content: "";
     position: absolute;
     inset-inline: 0;
-    bottom: 100%;
-    height: var(--jc-space-l);
+    bottom: calc(100% + 1px);
+    /* The header's constraint, mirrored: a mask shorter than a line box cuts through the glyphs of
+     * the last visible line instead of dissolving it. Same token, same arithmetic, other end. */
+    height: var(--jc-scroll-mask);
     /*
      * A solid fill behind a mask rather than a gradient of the colour itself: background-image
      * cannot be transitioned, so a gradient scrim would snap to the new theme while every surface
@@ -1549,7 +2761,13 @@ vaadin-dialog::part(footer) {
     display: flex;
     align-items: flex-end;
     gap: var(--jc-space-xs);
-    padding: var(--jc-space-xs) var(--jc-space-xs) var(--jc-space-xs) var(--jc-space-m);
+    /*
+     * One inset on both sides. It used to be 16px against 8px, which put the first character 17px
+     * inside the pill and the send circle 9px from the opposite wall - the button read as jammed
+     * against the edge of a control it is part of. The textarea carries no inline padding of its
+     * own, so this rule is the whole of the field's horizontal rhythm.
+     */
+    padding: var(--jc-space-xs) var(--jc-space-s);
     border: 1px solid var(--jc-border-strong);
     border-radius: var(--jc-radius-l);
     background: var(--jc-surface-raised);
@@ -1574,12 +2792,15 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * Locked while a turn streams. It steps down to the page ground rather than to the sunken tone,
- * which the composer band itself now carries - a field the same colour as the bar around it is not
- * a field, it is a gap.
+ * Locked while a turn streams, and still a field.
+ *
+ * It used to step down to the page ground, which measured 1.08:1 against the band in light and
+ * 1.05:1 in dark - a field the same colour as the bar around it is not a field, it is a gap, and
+ * for the length of every answer only the focus ring said otherwise. It keeps the raised tone every
+ * other resting field has and gives up its elevation instead: what changes while a turn streams is
+ * that the control stops standing off the page, not that it stops being one.
  */
 .jc-composer__field--busy {
-    background: var(--jc-surface);
     border-color: var(--jc-border);
     box-shadow: none;
 }
@@ -1596,36 +2817,47 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * The one moving thing next to the words "JavaClaw is responding". The other animated cue - the
- * caret - is at the end of the answer, which on a full screen is several hundred pixels away from
- * the control the reader is waiting at, so the hint carries its own.
+ * The same line, used to say that something the reader asked for did not happen - a rewind the
+ * store refused. Painted in the danger ink rather than given a box of its own: what has to be
+ * noticed is one sentence, and the conversation it is about is already the thing being looked at.
  */
-.jc-hint__dots {
+.jc-composer__hint--notice {
+    color: var(--jc-danger);
+}
+
+/*
+ * The one moving thing next to the words "JavaClaw is responding", and next to "Thinking" in an
+ * answer that has not started yet. The other animated cue - the caret - is at the end of the
+ * answer, which on a full screen is several hundred pixels away from the control the reader is
+ * waiting at, so the hint carries its own.
+ */
+.jc-dots {
     display: inline-flex;
     align-items: center;
-    gap: 0.1875rem;
-    margin-inline-start: 0.375rem;
+    /* On the scale, not beside it: these were 3px and 6px, the two gaps the 4px base does not have. */
+    gap: var(--jc-space-3xs);
+    margin-inline-start: var(--jc-space-xs);
     vertical-align: middle;
 }
 
-.jc-hint__dot {
+.jc-dot {
     width: 3px;
     height: 3px;
     border-radius: 50%;
     background: currentColor;
     opacity: 0.28;
-    animation: jc-hint-dot 1.2s ease-in-out infinite;
+    animation: jc-dot-pulse 1.2s ease-in-out infinite;
 }
 
-.jc-hint__dot:nth-child(2) {
+.jc-dot:nth-child(2) {
     animation-delay: 0.16s;
 }
 
-.jc-hint__dot:nth-child(3) {
+.jc-dot:nth-child(3) {
     animation-delay: 0.32s;
 }
 
-@keyframes jc-hint-dot {
+@keyframes jc-dot-pulse {
     30% {
         opacity: 1;
     }
@@ -1636,7 +2868,7 @@ vaadin-dialog::part(footer) {
  * left on, it is the only thing still moving on a page a reader asked to hold still.
  */
 @media (prefers-reduced-motion: reduce) {
-    .jc-hint__dot {
+    .jc-dot {
         animation: none;
         opacity: 0.55;
     }
@@ -1669,6 +2901,7 @@ vaadin-dialog::part(footer) {
     --vaadin-input-field-border-width: 0;
     --vaadin-input-field-border-radius: 0;
     --vaadin-input-field-disabled-background: transparent;
+    --vaadin-input-field-readonly-background: transparent;
     --vaadin-input-field-hover-highlight-opacity: 0;
     --vaadin-input-field-value-color: var(--jc-text);
     --vaadin-input-field-disabled-value-color: var(--jc-text-faint);
@@ -1700,6 +2933,13 @@ vaadin-dialog::part(footer) {
     min-height: calc(var(--jc-font-size-m) * var(--jc-line-height-body));
     max-height: min(40vh, 12rem);
     padding-block: var(--jc-space-2xs);
+    /*
+     * The shell already owns the horizontal inset; the textarea's own user-agent padding was adding
+     * 4px on top of it, so the placeholder sat 17px from the shell's edge while the send button sat
+     * 13px from the other one. Nothing on screen explained the 4px, and a composer is the one box
+     * whose two ends are read against each other.
+     */
+    padding-inline: 0;
     overflow-y: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--jc-border-strong) transparent;
@@ -1707,7 +2947,16 @@ vaadin-dialog::part(footer) {
     transition: color var(--jc-transition-theme);
 }
 
-.jc-composer vaadin-text-area[disabled] {
+/*
+ * Both attributes, because the field is locked with one and Vaadin dims it under the other.
+ *
+ * The composer is read-only while a turn streams rather than disabled: a disabled element cannot
+ * hold focus, so locking a field the reader is typing in moves the caret to the document body and
+ * their next Tab restarts at the top of the page. [disabled] is kept in the selector because
+ * nothing else in this stylesheet would restore the field if it were ever locked that way again.
+ */
+.jc-composer vaadin-text-area[disabled],
+.jc-composer vaadin-text-area[readonly] {
     opacity: 1;
 }
 
@@ -1720,14 +2969,41 @@ vaadin-dialog::part(footer) {
  * is busy. The value is cleared on submit, so what this restores is the placeholder and nothing
  * else.
  */
-.jc-composer vaadin-text-area[disabled] > textarea {
+/*
+ * The dashed rectangle that appeared for the length of every answer.
+ *
+ * Lumo paints a locked field with a dashed border, declared as a shorthand - so
+ * `--vaadin-input-field-border-width: 0` above never reached it, and the rule that strips the input
+ * part sets padding, background, shadow and height but no border. The result was a second rect
+ * nested 12px inside our own accent focus ring, on the most-looked-at control on the screen, in a
+ * slate that exists nowhere else in the palette. The shell carries the whole affordance; the field
+ * inside it carries none. [disabled] for the same reason the rule above carries it.
+ */
+.jc-composer vaadin-text-area[disabled]::part(input-field),
+.jc-composer vaadin-text-area[readonly]::part(input-field) {
+    border: 0;
+}
+
+.jc-composer vaadin-text-area[disabled] > textarea,
+.jc-composer vaadin-text-area[readonly] > textarea {
     cursor: not-allowed;
     opacity: 1;
 }
 
-.jc-composer vaadin-text-area[disabled] > textarea::placeholder {
+.jc-composer vaadin-text-area[disabled] > textarea::placeholder,
+.jc-composer vaadin-text-area[readonly] > textarea::placeholder {
     color: var(--jc-text-faint);
     opacity: 1;
+}
+
+/*
+ * The focus ring is the whole point of locking the field this way, so it must survive the lock. The
+ * shell carries the ring on :focus-within and the busy modifier resets the box-shadow underneath
+ * it; without this the reader keeps focus and loses every sign of it.
+ */
+.jc-composer__field--busy:focus-within {
+    border-color: var(--jc-accent);
+    box-shadow: 0 0 0 3px var(--jc-focus-ring-halo);
 }
 
 /* ==========================================================================
@@ -1735,6 +3011,11 @@ vaadin-dialog::part(footer) {
  *
  * Every interactive element declares hover, focus-visible (Vaadin exposes it as [focus-ring]),
  * active and disabled explicitly - a default state alone is not a state model.
+ *
+ * That was a claim with nothing checking it, and it was false in ten places: three controls had no
+ * focus ring of their own and fell back to Chrome's, and six more had no press state at all.
+ * StylesheetClaimsTest now holds a roster of every control this sheet paints and fails if any one of
+ * them is missing a state, so the paragraph above is a test rather than an intention.
  * ========================================================================== */
 
 /* --- Primary send button ------------------------------------------------ */
@@ -1835,8 +3116,8 @@ vaadin-button.jc-send--stop:active {
 
 vaadin-button.jc-icon-button {
     flex: 0 0 auto;
-    width: 2.125rem;
-    height: 2.125rem;
+    width: var(--jc-icon-button-size);
+    height: var(--jc-icon-button-size);
     min-width: 0;
     margin: 0;
     padding: 0;
@@ -1969,7 +3250,117 @@ vaadin-button > .jc-glyph {
         max-width: 88%;
     }
 
+    /*
+     * The code gutter gives back what it can. Its two paddings are 28px of a 390px screen spent on
+     * a column that is 2 characters wide, and every one of them is a character of the snippet that
+     * has to be scrolled to instead.
+     */
+    .jc-code__line::before {
+        padding-inline: var(--jc-space-xs) var(--jc-space-s);
+    }
+
     .jc-composer {
         padding-bottom: max(var(--jc-space-m), env(safe-area-inset-bottom));
+    }
+
+    /*
+     * The keyboard hint names two keys a phone does not have. It cost 39px of an 844px screen to
+     * explain a shortcut that cannot be typed there, which is the most expensive line in the layout
+     * per word of use. The busy hint stays - "JavaClaw is responding" is the one thing a reader
+     * waiting at this control does need - and takes its own height when a turn starts, which lands
+     * in the same frame as the transcript gaining a whole new turn.
+     */
+    .jc-composer__hint:has(kbd) {
+        display: none;
+    }
+
+    .jc-composer__hint {
+        min-height: 0;
+    }
+
+    /*
+     * The paragraph ran to 352px inside a 358px measure - 98% - under a 201px heading. Nothing
+     * overflowed at 390px and nothing would have been left at 360px, which is a line that fits by
+     * luck. A measure in ch rather than rem because what is being bounded is the line, not the box.
+     */
+    .jc-empty__hint {
+        max-width: 30ch;
+    }
+
+    /* One question per line at this width, so a chip is never two words on a second row. */
+    .jc-starters {
+        flex-direction: column;
+        align-items: stretch;
+        width: 100%;
+    }
+}
+
+/*
+ * --- Coarse pointers -----------------------------------------------------
+ *
+ * A finger is not a mouse and the rest of this stylesheet was written for a mouse: rows landed at
+ * 33px and the send button at 36px, both under the 44px a touch target needs. Sizing is raised here
+ * rather than everywhere, because on a desktop a 44px conversation row costs the column a third of
+ * the history it can show, and there is no finger to justify it.
+ *
+ * Keyed on the pointer, not on the viewport: a narrow window on a laptop is still a mouse, and a
+ * tablet at 1024px is still a finger.
+ */
+@media (pointer: coarse) {
+    .jc-conv,
+    .jc-group__head,
+    .jc-new-chat,
+    .jc-user__trigger,
+    .jc-menu__item,
+    .jc-starter,
+    .jc-edit-button {
+        min-height: 2.75rem;
+    }
+
+    /*
+     * There is no hover on a finger, so the row's controls only ever appear in their rest state
+     * here. They are painted at rest at every pointer type now; what this adds is the room between
+     * them that two 44px targets need and two 30px ones do not.
+     */
+    .jc-message__actions {
+        gap: var(--jc-space-2xs);
+    }
+
+    .jc-msg-action {
+        width: 2.75rem;
+        height: 2.75rem;
+    }
+
+    vaadin-button.jc-icon-button {
+        width: 2.75rem;
+        height: 2.75rem;
+        --vaadin-button-height: 2.75rem;
+    }
+
+    vaadin-button.jc-send {
+        width: 2.75rem;
+        height: 2.75rem;
+        --vaadin-button-height: 2.75rem;
+    }
+}
+
+/*
+ * --- Where the heading starts --------------------------------------------
+ *
+ * The bar's band is full bleed and its contents sit on the measure, so the title starts on the same
+ * x as the first word of every answer and as the composer's own text. The hamburger broke that: in
+ * flow it took the measure's leading edge and pushed the heading 41-46px inboard, so the moment the
+ * drawer closed the header stopped agreeing with the column beneath it.
+ *
+ * Lifting it out of flow gives the leading edge back to the heading and parks the control in the
+ * gutter the measure is already leaving. Only where that gutter exists: below this width the
+ * measure runs edge to edge and an absolute control would sit on top of the title.
+ */
+@media (min-width: 52rem) {
+    vaadin-button.jc-topbar__toggle {
+        position: absolute;
+        inset-inline-start: var(--jc-space-s);
+        top: 50%;
+        transform: translateY(-50%);
     }
 }

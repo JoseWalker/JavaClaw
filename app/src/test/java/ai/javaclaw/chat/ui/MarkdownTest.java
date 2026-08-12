@@ -55,8 +55,25 @@ class MarkdownTest {
     void rendersUnterminatedCodeFence() {
         List<Element> blocks = Markdown.render("```java\nvar x = a ** b;\n");
 
-        assertThat(tags(blocks)).containsExactly("pre");
+        assertThat(tags(blocks)).containsExactly("figure");
         assertThat(text(blocks)).contains("var x = a ** b;");
+    }
+
+    @Test
+    @DisplayName("a code block is labelled and comes with a way to take it away")
+    void framesCodeBlocks() {
+        Element figure = Markdown.render("```java\nvar x = 1;\n```").get(0);
+
+        assertThat(figure.getAttribute("class")).isEqualTo("jc-code");
+        Element head = child(figure, "figcaption");
+        assertThat(child(head, "span").getTextRecursively()).isEqualTo("java");
+
+        Element copy = child(head, "button");
+        assertThat(copy.getAttribute("type")).isEqualTo("button");
+        assertThat(copy.getAttribute("aria-label")).isEqualTo("Copy code");
+        // The control carries no behaviour of its own: it is claimed by the one delegated listener
+        // the transcript installs, which is what keeps a copy off the server entirely.
+        assertThat(copy.getAttribute("data-jc-copy")).isEqualTo("code");
     }
 
     @Test
@@ -100,6 +117,148 @@ class MarkdownTest {
     void rendersNothingForEmptyInput() {
         assertThat(Markdown.render(null)).isEmpty();
         assertThat(Markdown.render("   \n  ")).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a pipe table becomes a table, with its header apart from its rows")
+    void rendersTable() {
+        List<Element> blocks = Markdown.render("""
+                | Tool | Language |
+                | --- | --- |
+                | Gradle | Groovy |
+                | Maven | XML |
+                """);
+
+        assertThat(tags(blocks)).containsExactly("div");
+        Element table = onlyChild(blocks.get(0));
+        assertThat(table.getTag()).isEqualTo("table");
+        assertThat(tags(table.getChildren().toList())).containsExactly("thead", "tbody");
+
+        Element headerRow = onlyChild(child(table, "thead"));
+        assertThat(tags(headerRow.getChildren().toList())).containsExactly("th", "th");
+        assertThat(headerRow.getTextRecursively()).contains("Tool", "Language");
+
+        List<Element> bodyRows = child(table, "tbody").getChildren().toList();
+        assertThat(tags(bodyRows)).containsExactly("tr", "tr");
+        assertThat(tags(bodyRows.get(0).getChildren().toList())).containsExactly("td", "td");
+        assertThat(text(blocks)).doesNotContain("|", "---");
+    }
+
+    @Test
+    @DisplayName("a row of pipes with no delimiter under it is a paragraph, not a table")
+    void refusesTableWithoutDelimiterRow() {
+        List<Element> blocks = Markdown.render("| not | a table |\n| still | not |\n");
+
+        assertThat(tags(blocks)).containsExactly("p");
+    }
+
+    @Test
+    @DisplayName("a delimiter row that does not match the header is refused rather than guessed at")
+    void refusesTableWithMismatchedColumnCount() {
+        List<Element> blocks = Markdown.render("| a | b | c |\n| --- | --- |\n| 1 | 2 | 3 |\n");
+
+        assertThat(tags(blocks)).containsExactly("p");
+    }
+
+    @Test
+    @DisplayName("a cell carries inline markup, and an escaped pipe stays a pipe")
+    void rendersCellContent() {
+        List<Element> blocks = Markdown.render("""
+                | Field | Note |
+                | --- | --- |
+                | **id** | a \\| b |
+                """);
+
+        List<Element> cells =
+                onlyChild(child(onlyChild(blocks.get(0)), "tbody")).getChildren().toList();
+        assertThat(tags(cells.get(0).getChildren().toList())).containsExactly("strong");
+        assertThat(cells.get(1).getTextRecursively()).isEqualTo("a | b");
+    }
+
+    @Test
+    @DisplayName("a table still arriving renders the rows it has")
+    void rendersPartialTableWhileStreaming() {
+        List<Element> blocks = Markdown.render("| Tool | Language |\n| --- | --- |\n");
+
+        assertThat(tags(blocks)).containsExactly("div");
+        assertThat(child(onlyChild(blocks.get(0)), "tbody").getChildCount()).isZero();
+    }
+
+    @Test
+    @DisplayName("a fence names its language on the element, so it can be highlighted and labelled")
+    void keepsCodeFenceLanguage() {
+        Element code = codeOf(Markdown.render("```java\nvar x = 1;\n```").get(0));
+
+        assertThat(code.getAttribute("class")).isEqualTo("language-java");
+        assertThat(code.getAttribute("data-language")).isEqualTo("java");
+    }
+
+    @Test
+    @DisplayName("an info string that is not a language name never reaches the class attribute")
+    void refusesHostileFenceInfo() {
+        Element code = codeOf(Markdown.render("```\" onload=\"alert(1)\nx\n```").get(0));
+
+        assertThat(code.getAttribute("class")).isNull();
+        assertThat(code.getAttribute("data-language")).isNull();
+        assertThat(code.getTextRecursively()).contains("x");
+    }
+
+    @Test
+    @DisplayName("a table directly under a sentence is still a table")
+    void startsTableWithoutABlankLineAbove() {
+        List<Element> blocks = Markdown.render("""
+                Here is what I found:
+                | Tool | Language |
+                | --- | --- |
+                | Gradle | Groovy |
+                """);
+
+        assertThat(tags(blocks)).containsExactly("p", "div");
+    }
+
+    /**
+     * A table is the one block whose width is decided by its content rather than by the measure, so
+     * it is the one block that can be asked to hold more than the column has room for. Measured on
+     * the running build with a twelve-column table injected into a real answer: every column
+     * collapsed to 45px and each heading wrapped to four lines, inside a container that reported no
+     * overflow at all. Nothing was clipped and nothing scrolled - the table simply became
+     * unreadable, which is the failure mode a still image cannot show.
+     *
+     * <p>The scroll belongs to a wrapper rather than to the table. Making the table itself the
+     * scroll container costs it its row alignment - a table with {@code display: block} no longer
+     * sizes its header and its body to the same columns - which is what the stylesheet's own note
+     * on this rule warns about. A wrapper leaves the table a table.
+     */
+    @Test
+    @DisplayName("a table is wrapped in a container that can scroll it, rather than squeezed")
+    void wrapsTableInItsOwnScroller() {
+        List<Element> blocks = Markdown.render("""
+                | Tool | Language |
+                | --- | --- |
+                | Gradle | Groovy |
+                """);
+
+        Element wrapper = blocks.get(0);
+        assertThat(wrapper.getTag()).isEqualTo("div");
+        assertThat(wrapper.getAttribute("class")).isEqualTo("jc-table");
+        assertThat(onlyChild(wrapper).getTag()).isEqualTo("table");
+    }
+
+    /** The {@code <code>} inside a code figure, which is two levels down from the block. */
+    private static Element codeOf(Element figure) {
+        return child(child(figure, "pre"), "code");
+    }
+
+    private static Element child(Element parent, String tag) {
+        return parent.getChildren()
+                .filter(candidate -> tag.equals(tagOf(candidate)))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no <" + tag + "> under <" + tagOf(parent) + ">"));
+    }
+
+    private static Element onlyChild(Element parent) {
+        assertThat(parent.getChildCount()).isEqualTo(1);
+        return parent.getChild(0);
     }
 
     private static List<String> tags(List<Element> elements) {

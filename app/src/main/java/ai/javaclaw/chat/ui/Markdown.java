@@ -5,6 +5,7 @@ import com.vaadin.flow.dom.Element;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -20,9 +21,14 @@ import java.util.regex.Pattern;
  * <p>A markdown library would be a new dependency on a build this UI is not allowed to change, and
  * a client-side renderer would be a Node package. What an agent emits is a small, well-known subset,
  * so that subset is parsed here: fenced code, headings, bullet and numbered lists with one level of
- * nesting, block quotes, thematic breaks, paragraphs, and inline emphasis, code spans and links.
- * Anything it does not recognise stays as the text it was - the failure mode is a plain paragraph,
- * never a swallowed sentence.
+ * nesting, block quotes, thematic breaks, tables, paragraphs, and inline emphasis, code spans,
+ * links and maths. Anything it does not recognise stays as the text it was - the failure mode is a
+ * plain paragraph, never a swallowed sentence.
+ *
+ * <p>Two of those have a file of their own, because each is a small language rather than a piece of
+ * punctuation: {@link Highlight} decides what the inside of a code block means, and {@link Latex}
+ * decides whether a run of dollars is a formula this UI can honestly draw. Both answer "no" by
+ * default, and this parser prints the source when they do.
  *
  * <h2>Why it cannot inject markup</h2>
  *
@@ -41,15 +47,41 @@ final class Markdown {
     private static final int MAX_DEPTH = 6;
 
     private static final Pattern HEADING = Pattern.compile("^ {0,3}(#{1,6})\\s+(.*?)\\s*#*\\s*$");
-    private static final Pattern FENCE = Pattern.compile("^ {0,3}(```|~~~).*$");
+    private static final Pattern FENCE = Pattern.compile("^ {0,3}(```|~~~)\\s*(\\S*).*$");
+
+    /**
+     * What a language name is allowed to look like. The info string after a fence is model output,
+     * and it is the only thing on this page that would become part of a class attribute, so it is
+     * matched against a shape rather than escaped: anything else is not a language and is dropped.
+     */
+    private static final Pattern LANGUAGE = Pattern.compile("[a-z0-9][a-z0-9+#._-]{0,19}");
     private static final Pattern THEMATIC_BREAK = Pattern.compile("^ {0,3}([-*_])(?:\\s*\\1){2,}\\s*$");
     private static final Pattern BULLET = Pattern.compile("^(\\s*)([-*+])\\s+(.*)$");
     private static final Pattern ORDERED = Pattern.compile("^(\\s*)(\\d{1,9})[.)]\\s+(.*)$");
     private static final Pattern QUOTE = Pattern.compile("^ {0,3}>\\s?(.*)$");
     private static final Pattern LINK = Pattern.compile("\\[([^\\]]*)]\\(\\s*([^)\\s]*)(?:\\s+\"[^\"]*\")?\\s*\\)");
 
+    /** The cell shape of a table's second row - the one that makes the first row a header. */
+    private static final Pattern DELIMITER_CELL = Pattern.compile(":?-+:?");
+
+    /**
+     * Ceiling on a table's width. A row of pipes is cheap for a model to emit and expensive to turn
+     * into elements, and past this many columns nothing readable comes out anyway. Beyond it the
+     * lines are not a table and fall through to the paragraph they look like.
+     */
+    private static final int MAX_TABLE_COLUMNS = 32;
+
     /** Punctuation a backslash may hide from the parser, as in CommonMark. */
     private static final String ESCAPABLE = "\\`*_{}[]()#+-.!>~|";
+
+    /** Named on the code block's own control, where a screen reader and a hovering pointer find it. */
+    private static final String COPY_CODE_LABEL = "Copy code";
+
+    /** The delimiter pairs that open maths inside a sentence, longest first so {@code $$} wins. */
+    private static final String[][] INLINE_MATH = {{"$$", "$$"}, {"\\(", "\\)"}};
+
+    /** The delimiter pairs that open maths on a line of its own. */
+    private static final String[][] DISPLAY_MATH = {{"$$", "$$"}, {"\\[", "\\]"}};
 
     /**
      * Renders markdown into detached elements, ready to be appended to a {@code .jc-prose} container.
@@ -63,6 +95,47 @@ final class Markdown {
         }
         String normalised = markdown.replace("\r\n", "\n").replace('\r', '\n');
         return blocks(List.of(normalised.split("\n", -1)), 0);
+    }
+
+    /**
+     * Renders a run of text with the inline half of the grammar only - emphasis, code spans and
+     * links - and no block construct at all.
+     *
+     * <p>This is for the part of an answer that has not finished arriving. Block structure cannot be
+     * decided from a half-written answer, because the next token can still turn a paragraph into a
+     * table or add a row to one; that is {@link StreamingProse}'s whole subject and it is not
+     * relaxed here. Inline structure is different in kind: no inline construct in this grammar
+     * spans a line, so a delimiter pair that has closed on a line means the same thing whatever
+     * arrives after it, and holding it back buys nothing but a screen of asterisks.
+     *
+     * <p>Line breaks come back as the newline characters they were rather than as {@code <br>}. The
+     * unfinished part of an answer is drawn under {@code white-space: pre-wrap}, where a break
+     * element and the newline beside it would both print.
+     *
+     * <p>Same guarantees as {@link #render}: nothing is parsed as HTML, every scrap of text is set
+     * through the escaping API, and a link target is allow-listed by scheme or is not a target.
+     *
+     * @param text a run of an answer, possibly null, empty or ending mid-word
+     * @return detached nodes in order, ready to be appended to a {@code .jc-prose} container
+     */
+    static List<Element> inlineFlow(String text) {
+        if (text == null || text.isEmpty()) {
+            return List.of();
+        }
+        String normalised = text.replace("\r\n", "\n").replace('\r', '\n');
+        Element holder = new Element("span");
+        String[] lines = normalised.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) {
+                holder.appendChild(Element.createText("\n"));
+            }
+            inline(lines[i], holder, 1);
+        }
+        List<Element> nodes = holder.getChildren().toList();
+        // Detached before they are handed out, so the caller appends nodes that belong to nobody
+        // rather than silently moving them out of a parent it was never given.
+        holder.removeAllChildren();
+        return nodes;
     }
 
     // ------------------------------------------------------------------ blocks
@@ -87,8 +160,13 @@ final class Markdown {
                 i = quote(lines, i, out, depth);
             } else if (itemMarker(line) != null) {
                 i = list(lines, i, out, depth);
+            } else if (opensTable(lines, i)) {
+                i = table(lines, i, out, depth);
             } else {
-                i = paragraph(lines, i, out, depth);
+                // Maths is asked before prose and answers for itself: a formula this UI cannot draw
+                // reports that it consumed nothing, and the lines are the paragraph they look like.
+                int math = displayMath(lines, i, out);
+                i = math > i ? math : paragraph(lines, i, out, depth);
             }
         }
         return out;
@@ -119,12 +197,169 @@ final class Markdown {
             code.append(lines.get(i)).append('\n');
             i++;
         }
+        out.add(codeFigure(code.toString(), languageOf(lines.get(start))));
+        return i < lines.size() ? i + 1 : i;
+    }
+
+    /**
+     * A code block with the two things a reader wants from one: to know what language they are
+     * looking at, and to take it away.
+     *
+     * <p>Drawn as a figure with a caption because that is what it is - a labelled, self-contained
+     * lump in the middle of prose - and because the label has to sit outside the scrolling region:
+     * a language name that scrolls sideways with line 40 of the snippet is a label that is not
+     * there when it is wanted.
+     *
+     * <p>The copy control carries no behaviour of its own. It is marked for the single delegated
+     * listener the transcript installs, so a hundred code blocks in a conversation cost one listener
+     * and no server round trip when one is pressed.
+     *
+     * @param code     the block's text, exactly as it was written
+     * @param language the language named on the fence, already allow-listed by shape, or null
+     */
+    private static Element codeFigure(String code, String language) {
         Element block = new Element("code");
-        block.setText(code.toString());
+        if (language != null) {
+            // The class is the convention a highlighter is looked up by; the data attribute is what
+            // the stylesheet and the harness read, so the reader is told what they are looking at.
+            block.setAttribute("class", "language-" + language);
+            block.setAttribute("data-language", language);
+        }
+        Highlight.lines(code, language).forEach(block::appendChild);
+
         Element pre = new Element("pre");
         pre.appendChild(block);
-        out.add(pre);
-        return i < lines.size() ? i + 1 : i;
+
+        Element figure = new Element("figure");
+        figure.setAttribute("class", "jc-code");
+        figure.appendChild(codeHead(language), pre);
+        return figure;
+    }
+
+    private static Element codeHead(String language) {
+        Element name = new Element("span");
+        name.setAttribute("class", "jc-code__lang");
+        // A fence with no info string still gets a label, so the bar is the same height on every
+        // block and the copy control does not move between one block and the next.
+        name.setText(language == null ? "code" : language);
+
+        Element head = new Element("figcaption");
+        head.setAttribute("class", "jc-code__head");
+        head.appendChild(name, copyControl());
+        return head;
+    }
+
+    /**
+     * The copy control, as markup only.
+     *
+     * <p>Both states are drawn into the button and the stylesheet shows one of them, which is how
+     * the confirmation costs nothing at the moment it is needed: the tick is already on the page
+     * before the reader presses anything.
+     */
+    private static Element copyControl() {
+        Element button = new Element("button");
+        button.setAttribute("class", "jc-code__copy");
+        button.setAttribute("type", "button");
+        // The handle the transcript's delegated listener claims. Nothing else marks itself with it.
+        button.setAttribute("data-jc-copy", "code");
+        button.setAttribute("aria-label", COPY_CODE_LABEL);
+        button.setAttribute("title", COPY_CODE_LABEL);
+        button.appendChild(
+                glyph(Icons.COPY, "jc-code__icon"),
+                glyph(Icons.CHECK, "jc-code__icon jc-code__icon--done"),
+                caption("Copy", "jc-code__copy-text"),
+                caption("Copied", "jc-code__copy-text jc-code__copy-text--done"));
+        return button;
+    }
+
+    private static Element glyph(String svg, String className) {
+        Element glyph = Icons.glyph(svg).getElement();
+        glyph.setAttribute("class", "jc-glyph " + className);
+        return glyph;
+    }
+
+    private static Element caption(String text, String className) {
+        Element caption = new Element("span");
+        caption.setAttribute("class", className);
+        caption.setText(text);
+        return caption;
+    }
+
+    /**
+     * The language named on a fence, if it named one this UI will repeat.
+     *
+     * @param fence the opening fence line
+     * @return a lowercase language name known to be safe as a class name, or null when the fence
+     *         carried no info string or carried something that is not a language name
+     */
+    private static String languageOf(String fence) {
+        Matcher matcher = FENCE.matcher(fence);
+        if (!matcher.matches()) {
+            return null;
+        }
+        String info = matcher.group(2).toLowerCase(Locale.ROOT);
+        return LANGUAGE.matcher(info).matches() ? info : null;
+    }
+
+    /**
+     * Reads a formula that stands on its own lines.
+     *
+     * <p>Display maths is the one block whose delimiters carry no other meaning, so it is read here
+     * rather than left to the inline pass: {@code $$} on a line by itself opens a formula that runs
+     * over as many lines as it needs, and a paragraph parser would have joined those lines with
+     * line breaks and handed the result to a renderer that cannot see it was ever one formula.
+     *
+     * <p>Nothing is consumed unless a formula actually comes out. An unclosed run of dollars, or one
+     * holding a command {@link Latex} will not draw, leaves the lines untouched for the paragraph
+     * they otherwise are - which is what keeps the source readable instead of swallowed.
+     *
+     * @return the line to continue from, or {@code start} when this is not display maths
+     */
+    private static int displayMath(List<String> lines, int start, List<Element> out) {
+        String opener = lines.get(start).strip();
+        for (String[] pair : DISPLAY_MATH) {
+            if (!opener.startsWith(pair[0])) {
+                continue;
+            }
+            int consumed = displayMath(lines, start, out, pair[0], pair[1]);
+            if (consumed > start) {
+                return consumed;
+            }
+        }
+        return start;
+    }
+
+    private static int displayMath(List<String> lines, int start, List<Element> out,
+                                   String open, String close) {
+        StringBuilder formula = new StringBuilder();
+        String head = lines.get(start).strip().substring(open.length());
+        int end = -1;
+
+        if (head.endsWith(close) && head.length() >= close.length()) {
+            formula.append(head, 0, head.length() - close.length());
+            end = start + 1;
+        } else {
+            formula.append(head);
+            for (int i = start + 1; i < lines.size() && end < 0; i++) {
+                String line = lines.get(i).strip();
+                if (line.endsWith(close)) {
+                    formula.append(' ').append(line, 0, line.length() - close.length());
+                    end = i + 1;
+                } else if (line.isEmpty()) {
+                    // A blank line ends a block everywhere else in this grammar, and a formula that
+                    // has not closed by then is not going to.
+                    return start;
+                } else {
+                    formula.append(' ').append(line);
+                }
+            }
+        }
+        if (end < 0) {
+            return start;
+        }
+        Optional<Element> math = Latex.render(formula.toString(), true);
+        math.ifPresent(out::add);
+        return math.isPresent() ? end : start;
     }
 
     private static int quote(List<String> lines, int start, List<Element> out, int depth) {
@@ -146,6 +381,141 @@ final class Markdown {
         }
         out.add(quote);
         return i;
+    }
+
+    /**
+     * Whether a table starts on this line.
+     *
+     * <p>A row of pipes is only a table when the line under it is a delimiter row with exactly the
+     * same number of cells. Anything less is a sentence that happens to contain pipes, and is left
+     * to the paragraph it is: guessing here would eat a line of prose and print it as a one-cell
+     * table.
+     */
+    private static boolean opensTable(List<String> lines, int at) {
+        if (at + 1 >= lines.size()) {
+            return false;
+        }
+        List<String> header = tableCells(lines.get(at));
+        if (header.isEmpty() || header.size() > MAX_TABLE_COLUMNS) {
+            return false;
+        }
+        List<String> delimiters = tableCells(lines.get(at + 1));
+        return delimiters.size() == header.size()
+                && delimiters.stream().allMatch(cell -> DELIMITER_CELL.matcher(cell.strip()).matches());
+    }
+
+    /**
+     * Reads a table: the header, the delimiter row that is never shown, and every row under it.
+     *
+     * <p>Stops at the first line that is not a row, which is also what a table still arriving from
+     * the model looks like - the rows that have landed are rendered, and the next token continues
+     * the table on the following pass.
+     *
+     * <p>The table is handed back inside a wrapper, because it is the one block in an answer whose
+     * width answers to its own content rather than to the measure, and a model asked for a
+     * comparison will happily return twelve columns. Without somewhere to scroll, those columns
+     * collapse - measured at 45px each on the running build, every heading wrapped to four lines,
+     * with no overflow reported anywhere. The scroll is the wrapper's rather than the table's on
+     * purpose: a table made into its own scroll container stops sizing its header and its body to
+     * the same columns, which trades a readable table for a scrollable misaligned one.
+     */
+    private static int table(List<String> lines, int start, List<Element> out, int depth) {
+        List<String> headers = tableCells(lines.get(start));
+        Element table = new Element("table");
+
+        Element head = new Element("thead");
+        head.appendChild(tableRow("th", headers, headers.size(), depth));
+        table.appendChild(head);
+
+        Element body = new Element("tbody");
+        int i = start + 2;
+        while (i < lines.size()) {
+            List<String> cells = tableCells(lines.get(i));
+            if (cells.isEmpty()) {
+                break;
+            }
+            body.appendChild(tableRow("td", cells, headers.size(), depth));
+            i++;
+        }
+        table.appendChild(body);
+
+        // The class is a literal, never anything derived from the answer, so the wrapper cannot
+        // carry a value the model chose.
+        Element scroller = new Element("div");
+        scroller.setAttribute("class", "jc-table");
+        scroller.appendChild(table);
+
+        out.add(scroller);
+        return i;
+    }
+
+    /**
+     * One row, held to the header's column count so every row lines up under the same headings: a
+     * ragged row is padded with empty cells and a long one is cut, rather than shifting the columns
+     * of that row against every other.
+     */
+    private static Element tableRow(String cellTag, List<String> cells, int columns, int depth) {
+        Element row = new Element("tr");
+        for (int column = 0; column < columns; column++) {
+            Element cell = new Element(cellTag);
+            if (column < cells.size()) {
+                inline(cells.get(column).strip(), cell, depth + 1);
+            }
+            row.appendChild(cell);
+        }
+        return row;
+    }
+
+    /**
+     * Splits a table row into its cells.
+     *
+     * <p>Only an unescaped pipe outside a code span divides two cells, so {@code \|} and a pipe
+     * inside backticks stay part of the text. The escape itself is left in place for {@link #inline}
+     * to resolve, so there is one implementation of what a backslash means rather than two.
+     *
+     * <p>The pipes on the outside of a row are optional in the syntax and are not columns; they are
+     * dropped here so {@code | a | b |} and {@code a | b} describe the same two-column row.
+     *
+     * @return the cells in order, or an empty list when this line is not a row at all
+     */
+    private static List<String> tableCells(String line) {
+        String row = line.strip();
+        if (row.isEmpty()) {
+            return List.of();
+        }
+        List<String> cells = new ArrayList<>();
+        StringBuilder cell = new StringBuilder();
+        boolean divided = false;
+        boolean inCodeSpan = false;
+
+        for (int i = 0; i < row.length(); i++) {
+            char c = row.charAt(i);
+            if (c == '\\' && i + 1 < row.length()) {
+                cell.append(c).append(row.charAt(i + 1));
+                i++;
+            } else if (c == '`') {
+                inCodeSpan = !inCodeSpan;
+                cell.append(c);
+            } else if (c == '|' && !inCodeSpan) {
+                divided = true;
+                cells.add(cell.toString());
+                cell.setLength(0);
+            } else {
+                cell.append(c);
+            }
+        }
+        cells.add(cell.toString());
+
+        if (!divided) {
+            return List.of();
+        }
+        if (row.startsWith("|")) {
+            cells.remove(0);
+        }
+        if (row.endsWith("|") && !cells.isEmpty()) {
+            cells.remove(cells.size() - 1);
+        }
+        return cells.size() > MAX_TABLE_COLUMNS ? List.of() : cells;
     }
 
     /**
@@ -225,7 +595,11 @@ final class Markdown {
         int i = start;
         while (i < lines.size()) {
             String line = lines.get(i);
-            if (line.isBlank() || (i > start && opensBlock(line))) {
+            // A table is the one block that cannot be recognised from its own first line, so it is
+            // asked about separately. Without this a lead-in sentence swallows the table under it,
+            // which is the shape an answer almost always arrives in.
+            if (line.isBlank()
+                    || (i > start && (opensBlock(line) || opensDisplayMath(line) || opensTable(lines, i)))) {
                 break;
             }
             text.add(line);
@@ -242,6 +616,24 @@ final class Markdown {
         }
         out.add(paragraph);
         return i;
+    }
+
+    /**
+     * Whether a line opens display maths, judged on the line alone.
+     *
+     * <p>Deliberately syntactic: this is asked while a paragraph is being read, to decide whether
+     * the paragraph has ended, and the answer must not depend on whether the formula further down
+     * turns out to be one this UI can draw. A run of dollars that {@link Latex} later refuses ends
+     * the paragraph and becomes a paragraph of its own, which is the source, unaltered.
+     */
+    private static boolean opensDisplayMath(String line) {
+        String start = line.strip();
+        for (String[] pair : DISPLAY_MATH) {
+            if (start.startsWith(pair[0])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean opensBlock(String line) {
@@ -296,6 +688,15 @@ final class Markdown {
         while (i < text.length()) {
             char c = text.charAt(i);
 
+            // Asked before the escape rule, because \( is an opening delimiter here and an escaped
+            // parenthesis there, and the formula is the more specific reading of the two.
+            if (c == '$' || c == '\\') {
+                int consumed = math(text, i, parent, plain);
+                if (consumed > 0) {
+                    i += consumed;
+                    continue;
+                }
+            }
             if (c == '\\' && i + 1 < text.length() && ESCAPABLE.indexOf(text.charAt(i + 1)) >= 0) {
                 plain.append(text.charAt(i + 1));
                 i += 2;
@@ -379,6 +780,88 @@ final class Markdown {
         inline(text.substring(from, end), emphasis, depth + 1);
         parent.appendChild(emphasis);
         return end + delimiter.length() - at;
+    }
+
+    /**
+     * Typesets a formula that sits inside a sentence.
+     *
+     * <p>Two families of delimiter, and they are not equally safe. {@code \( \)} and {@code $$ $$}
+     * mean maths and nothing else, so a closing delimiter is enough. A single {@code $} is a
+     * currency symbol most times it appears in an answer, so it has to earn the reading: the text
+     * after it is not a space, the closing dollar is not preceded by one and is not followed by a
+     * digit, and what lies between actually looks like a formula. "It costs $5 and $10 more" fails
+     * three of those, which is the point of having them.
+     *
+     * @return characters consumed, or 0 when this is not a formula this UI will draw
+     */
+    private static int math(String text, int at, Element parent, StringBuilder plain) {
+        for (String[] pair : INLINE_MATH) {
+            if (!text.startsWith(pair[0], at)) {
+                continue;
+            }
+            int from = at + pair[0].length();
+            int end = text.indexOf(pair[1], from);
+            if (end < 0) {
+                continue;
+            }
+            int consumed = typeset(text.substring(from, end), parent, plain,
+                    end + pair[1].length() - at);
+            if (consumed > 0) {
+                return consumed;
+            }
+        }
+        return text.charAt(at) == '$' ? dollarMath(text, at, parent, plain) : 0;
+    }
+
+    /** @return characters consumed, or 0 when this dollar does not open a formula */
+    private static int dollarMath(String text, int at, Element parent, StringBuilder plain) {
+        int from = at + 1;
+        if (from >= text.length()) {
+            return 0;
+        }
+        char after = text.charAt(from);
+        if (after == '$' || Character.isWhitespace(after)) {
+            return 0;
+        }
+        for (int i = from; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\') {
+                // An escaped dollar belongs to the formula rather than closing it.
+                i++;
+                continue;
+            }
+            if (c != '$') {
+                continue;
+            }
+            if (Character.isWhitespace(text.charAt(i - 1))) {
+                continue;
+            }
+            if (i + 1 < text.length() && Character.isDigit(text.charAt(i + 1))) {
+                // "$5 and $10": the second dollar opens a price, so the first closed nothing.
+                return 0;
+            }
+            String formula = text.substring(from, i);
+            return Latex.plausible(formula) ? typeset(formula, parent, plain, i + 1 - at) : 0;
+        }
+        return 0;
+    }
+
+    /**
+     * Draws a formula, or reports that it drew nothing.
+     *
+     * @param formula  the text between the delimiters
+     * @param consumed what to report when it was drawn
+     * @return {@code consumed}, or 0 when {@link Latex} refused the formula - in which case the
+     *         delimiters and everything between them stay the characters the model sent
+     */
+    private static int typeset(String formula, Element parent, StringBuilder plain, int consumed) {
+        Optional<Element> math = Latex.render(formula, false);
+        if (math.isEmpty()) {
+            return 0;
+        }
+        flush(plain, parent);
+        parent.appendChild(math.get());
+        return consumed;
     }
 
     /** @return characters consumed, or 0 when this bracket does not open a link */

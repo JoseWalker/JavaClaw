@@ -57,6 +57,65 @@ final class ThemePreference {
         }
         ui.getPage().executeJs("document.documentElement.setAttribute('theme', $0)",
                 mode.attributeValue());
+        syncBrowserChrome(ui);
+    }
+
+    /**
+     * Colours the browser's own chrome to match the page under it.
+     *
+     * <p>The shell asks for {@code viewport-fit=cover}, so on a phone the page is drawn right up
+     * into the band the address bar occupies. With no {@code theme-color} the browser leaves that
+     * band at its default, which puts a light strip directly above a dark header - the one seam in
+     * the product where the theme visibly stops.
+     *
+     * <p>The colour is resolved from {@code --jc-surface} rather than repeated here as a hex. That
+     * matters more than it looks: a literal would be a second copy of the palette living in Java,
+     * and the copy would survive a token change untouched. Resolving it through a real element is
+     * also the only way to read a {@code light-dark()} value at all, since the custom property
+     * itself still holds both halves whichever scheme is in force.
+     *
+     * <p>It is deliberately not read off the header, which is the element it matches. The header
+     * transitions its background over {@code --jc-transition-theme}, so for the 260ms after a flip
+     * it reports an interpolated colour - and an interpolated colour is not a value anything should
+     * be pinned to. The first version of this did read the header, and the strict guard below then
+     * rejected every in-flight value and left the browser chrome on the previous theme for good.
+     * A throwaway element carrying the same token with no transition of its own reports the
+     * destination immediately; created and removed inside one task, it never paints.
+     *
+     * <p>The script takes no parameters and reads nothing but the document, so there is no value
+     * here that could be interpolated into it.
+     */
+    static void syncBrowserChrome(UI ui) {
+        if (ui == null) {
+            return;
+        }
+        // Deferred a frame so the theme attribute set by apply() is in force before anything is
+        // resolved against it.
+        ui.getPage().executeJs(
+                """
+                requestAnimationFrame(() => {
+                  const probe = document.createElement('div');
+                  probe.style.cssText =
+                      'background-color: var(--jc-surface); transition: none; position: absolute;'
+                      + 'visibility: hidden; pointer-events: none; inset: 0 auto auto 0;';
+                  document.body.appendChild(probe);
+                  const resolved = getComputedStyle(probe).backgroundColor;
+                  probe.remove();
+                  // Deny by default: only a fully opaque, fully resolved colour is published. A
+                  // transparent or half-parsed value would tell the browser to paint its own chrome
+                  // see-through, which is worse than leaving it at the default.
+                  if (!/^rgb\\(\\s*\\d+\\s*,\\s*\\d+\\s*,\\s*\\d+\\s*\\)$/.test(resolved)) {
+                    return;
+                  }
+                  let tag = document.querySelector('meta[name="theme-color"]');
+                  if (!tag) {
+                    tag = document.createElement('meta');
+                    tag.setAttribute('name', 'theme-color');
+                    document.head.appendChild(tag);
+                  }
+                  tag.setAttribute('content', resolved);
+                });
+                """);
     }
 
     /**
@@ -76,6 +135,9 @@ final class ThemePreference {
             onResolved.accept(chosen.get());
             return;
         }
+        // No choice stored, so the stylesheet's media query has already decided and nothing needs
+        // applying - but the browser chrome still has to be told what it decided.
+        syncBrowserChrome(ui);
         ui.getPage()
                 .executeJs("return window.matchMedia('(prefers-color-scheme: dark)').matches")
                 .then(Boolean.class, prefersDark ->

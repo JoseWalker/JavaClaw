@@ -45,6 +45,17 @@ final class Icons {
     /** Chevron pointing down; rotated by CSS when its group is collapsed. */
     static final String CHEVRON_DOWN = OPEN + "<path d=\"m4.5 6.25 3.5 3.5 3.5-3.5\"/>" + "</svg>";
 
+    /**
+     * An arrow down to a line: return to the newest message.
+     *
+     * <p>The line under the arrowhead is what makes it "to the end" rather than "one page down",
+     * which is the difference between this control and a scroll.
+     */
+    static final String ARROW_DOWN = OPEN
+            + "<path d=\"M8 2.75v7.5M4.75 7l3.25 3.25L11.25 7\"/>"
+            + "<path d=\"M3.5 13.25h9\"/>"
+            + "</svg>";
+
     /** Chevron pointing up: the user menu's disclosure. */
     static final String CHEVRON_UP = OPEN + "<path d=\"m4.5 9.75 3.5-3.5 3.5 3.5\"/>" + "</svg>";
 
@@ -54,7 +65,52 @@ final class Icons {
             + "<path d=\"M2.9 13.5a5.1 5.1 0 0 1 10.2 0\"/>"
             + "</svg>";
 
-    /** Speech bubble: the mark on a conversation row. */
+    /**
+     * Two offset sheets: copy this message.
+     *
+     * <p>Drawn as one full rectangle behind a second one rather than as a clipboard, because a
+     * clipboard at 16 units is a rounded rectangle with a nub on it that reads as a document.
+     */
+    static final String COPY = OPEN
+            + "<rect x=\"5.75\" y=\"5.75\" width=\"7.5\" height=\"7.5\" rx=\"1.75\"/>"
+            + "<path d=\"M10.25 5.75V4.5a1.75 1.75 0 0 0-1.75-1.75h-4A1.75 1.75 0 0 0 2.75 4.5v4"
+            + " A1.75 1.75 0 0 0 4.5 10.25h1.25\"/>"
+            + "</svg>";
+
+    /** A tick: the copy landed. Only ever shown in place of {@link #COPY}, never beside it. */
+    static final String CHECK = OPEN + "<path d=\"m3.25 8.5 3 3 6.5-7\"/>" + "</svg>";
+
+    /**
+     * A pencil over a line: edit this message and ask again from there.
+     *
+     * <p>The line under the nib is what separates it from a generic diagonal stroke, and it is the
+     * same affordance every text field on the web has taught readers to expect.
+     */
+    static final String PENCIL = OPEN
+            + "<path d=\"M11.1 2.65a1.55 1.55 0 0 1 2.2 2.2L6.4 11.75l-2.9.75.75-2.9Z\"/>"
+            + "<path d=\"M2.75 14.25h10.5\"/>"
+            + "</svg>";
+
+    /**
+     * An arrow closing a circle: answer this again.
+     *
+     * <p>A full loop rather than the two-arrow refresh glyph: two arrows say "synchronise", which
+     * is what a reader would expect to affect the whole conversation rather than one answer.
+     */
+    static final String REGENERATE = OPEN
+            + "<path d=\"M13.1 8a5.1 5.1 0 1 1-1.5-3.6\"/>"
+            + "<path d=\"M13.25 2.4v2.9h-2.9\"/>"
+            + "</svg>";
+
+    /**
+     * Speech bubble, formerly the mark on a conversation row.
+     *
+     * <p>Dropped from the row because it was the same glyph on all of them: it distinguished nothing
+     * and spent title width in a column already truncating titles mid-word.
+     *
+     * @deprecated nothing draws this; remove it once no branch still expects a row icon
+     */
+    @Deprecated(forRemoval = true)
     static final String BUBBLE = OPEN
             + "<path d=\"M13.25 8.75a3.5 3.5 0 0 1-3.5 3.5H6.4L3.25 14.1V5.25a3.5 3.5 0 0 1 3.5-3.5h3a3.5 3.5"
             + " 0 0 1 3.5 3.5Z\"/>"

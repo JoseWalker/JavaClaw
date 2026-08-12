@@ -1,5 +1,6 @@
 package ai.javaclaw.chat.ui;
 
+import com.vaadin.flow.shared.Registration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
@@ -8,7 +9,6 @@ import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -16,57 +16,115 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Backs the sidebar with the conversations the agent actually has, plus clearly-marked samples.
+ * Backs the sidebar with the conversations the agent actually has, and with nothing else.
  *
  * <p>The store is reached through Spring AI's {@link ChatMemoryRepository} rather than through the
  * concrete file-system repository, so this class depends on an interface the application already
  * treats as its chat-memory contract and on nothing internal to another module.
  *
- * <p>What that interface can supply is thin: a list of conversation ids and their messages. Titles
- * are therefore derived from the first thing the reader asked, and the folder is derived from the
- * channel encoded in the id ({@code web}, {@code telegram-123456}). Both are real, if inferred.
+ * <p>What that interface can supply is thin: a list of conversation ids and their messages. So a
+ * title is asked for rather than taken: once a conversation has had one exchange,
+ * {@link ConversationNamer} asks the model what it is about, and until that answer arrives - or when
+ * it never does - the title falls back to {@link ConversationTitles}, which reduces the opening
+ * message to its topic. The reduction alone is not enough, and the store is why: six threads really
+ * were opened here with the same question, and six rows reduced to the same topic separated by an
+ * occurrence counter is a column nobody can navigate. The folder is derived from the channel encoded
+ * in the id ({@code web}, {@code telegram-123456}). Both are real, if inferred. Times come from
+ * {@link ConversationActivity}, which reports only what this process watched happen.
  *
- * <p>The derived title is not stable. Chat memory is a sliding window, so once a conversation runs
- * past it the earliest question is dropped from the store and the title moves to whatever is now
- * oldest. A conversation renaming itself as it grows is a real defect, and it is not one this
- * adapter can fix: it needs a title recorded once, which is the store's job.
- * Modification times, human-chosen titles, folders and tags are <em>not</em> recorded anywhere, so
- * rather than invent them per conversation this adapter appends a small set of rows marked
- * {@link ConversationSummary.Source#SAMPLE} and lets the sidebar say so out loud.
+ * <h2>What this adapter refuses to make up</h2>
+ *
+ * <p>An earlier version of this class appended seven invented conversations, filed under invented
+ * folders and carrying invented tags, so that the column would look inhabited while the store held
+ * one chat. That is a UI teaching its reader to trust data that does not exist, and the moment it is
+ * on screen there is no way for anyone to tell which half of the list is real. It is gone. Folders,
+ * tags and a recorded modification time remain genuinely unavailable, and the honest response to
+ * that is a shorter list, not a fuller one.
+ *
+ * <p>Neither title is stable across a restart, and that is a real defect this adapter cannot fix.
+ * Chat memory is a sliding window, so once a conversation runs past it the earliest question is
+ * dropped from the store and the derived title moves to whatever is now oldest; and an asked-for
+ * name lives in the naming component's memory, which the store cannot be told about. Both want a
+ * title recorded once beside the conversation, which is the store's job.
  */
 @Component
 class StoredConversationDirectory implements ConversationDirectory {
 
     private static final Logger log = LoggerFactory.getLogger(StoredConversationDirectory.class);
 
-    /** Above this the title stops being a title and starts being the message. */
-    private static final int TITLE_LENGTH = 42;
     private static final int PREVIEW_LENGTH = 160;
 
     private final ChatMemoryRepository repository;
+    private final ConversationActivity activity;
+    private final ConversationNamer namer;
 
-    StoredConversationDirectory(ChatMemoryRepository repository) {
+    StoredConversationDirectory(ChatMemoryRepository repository, ConversationActivity activity,
+                                ConversationNamer namer) {
         this.repository = repository;
+        this.activity = activity;
+        this.namer = namer;
+    }
+
+    @Override
+    public Registration onChanged(Runnable listener) {
+        // The one thing that changes under the UI today is a conversation acquiring its real name.
+        return namer.onNamed(listener);
     }
 
     @Override
     public List<ConversationSummary> conversations() {
         List<ConversationSummary> rows = new ArrayList<>(storedConversations());
-        rows.addAll(SampleConversations.rows());
-        // Stored rows have no timestamp to sort by, so ordering is by group first and the store's
-        // own order within it. Sorting samples ahead of real data would be an odd thing to teach.
+        // Recency first, because that is how a conversation is looked for. Rows this process never
+        // saw used have no time at all and sort below the ones that do, rather than being given a
+        // date that would put them somewhere specific and wrong. Title breaks the remaining ties so
+        // the column does not reshuffle itself between two renders of the same data.
         rows.sort(Comparator
-                .comparingInt((ConversationSummary row) -> row.source() == ConversationSummary.Source.STORED ? 0 : 1)
-                .thenComparing(row -> row.updatedAt().orElse(Instant.EPOCH), Comparator.reverseOrder()));
+                .comparing((ConversationSummary row) -> row.updatedAt().orElse(Instant.EPOCH),
+                        Comparator.reverseOrder())
+                .thenComparing(ConversationSummary::title, String.CASE_INSENSITIVE_ORDER));
         return List.copyOf(rows);
     }
 
     @Override
     public Optional<ConversationSummary> find(String id) {
-        if (id == null || id.isBlank()) {
+        if (!ConversationIds.isWellFormed(id)) {
             return Optional.empty();
         }
         return conversations().stream().filter(row -> row.id().equals(id)).findFirst();
+    }
+
+    @Override
+    public List<ConversationMessage> transcript(String id) {
+        // Checked before the store is touched rather than after: an id of the wrong shape is not a
+        // conversation that happens to be missing, it is a value that has no business becoming a
+        // file name, and the store is the wrong place to find that out.
+        if (!ConversationIds.isWellFormed(id)) {
+            log.warn("Refused to open a conversation whose id is not of the expected shape");
+            return List.of();
+        }
+        return messagesOf(id).stream()
+                .map(StoredConversationDirectory::toTurn)
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    /**
+     * Narrows one stored message to a turn the transcript can draw.
+     *
+     * <p>Anything that is neither the reader nor the assistant - a system prompt, a tool exchange -
+     * is dropped rather than guessed at. It was never meant to be read as part of the conversation,
+     * and painting it as one of the two speakers would attribute it to somebody.
+     */
+    private static Optional<ConversationMessage> toTurn(Message message) {
+        String text = message.getText();
+        if (text == null || text.isBlank()) {
+            return Optional.empty();
+        }
+        return switch (message.getMessageType()) {
+            case USER -> Optional.of(new ConversationMessage(ConversationMessage.Role.USER, text));
+            case ASSISTANT -> Optional.of(new ConversationMessage(ConversationMessage.Role.ASSISTANT, text));
+            case SYSTEM, TOOL -> Optional.empty();
+        };
     }
 
     /**
@@ -91,29 +149,51 @@ class StoredConversationDirectory implements ConversationDirectory {
     }
 
     private Optional<ConversationSummary> summarise(String id) {
-        List<Message> messages;
-        try {
-            messages = repository.findByConversationId(id);
-        } catch (RuntimeException e) {
-            log.warn("Could not read conversation {} for the sidebar; skipping it", id, e);
+        if (!ConversationIds.isWellFormed(id)) {
+            // Nothing this application writes can produce such an id, so one in the store is either
+            // a foreign file or a bug. Either way it is not offered as somewhere to click.
+            log.warn("Skipping a stored conversation whose id is not of the expected shape");
+            return Optional.empty();
+        }
+        List<Message> messages = messagesOf(id);
+        if (messages.isEmpty()) {
             return Optional.empty();
         }
 
         String firstQuestion = firstText(messages, MessageType.USER);
+        String firstAnswer = firstText(messages, MessageType.ASSISTANT);
         String lastAnything = lastText(messages);
-        String title = firstQuestion.isBlank() ? "Untitled chat" : shorten(firstQuestion, TITLE_LENGTH);
-        String preview = shorten(lastAnything.isBlank() ? firstQuestion : lastAnything, PREVIEW_LENGTH);
+        // Asked for once, on the first render that finds this conversation with a reply in it. The
+        // call is not waited on - the row is drawn now, under its derived title, and redrawn when
+        // the name arrives - so a slow or unreachable model costs the column nothing.
+        namer.requestName(id, firstQuestion, firstAnswer);
+        // The title is left at its full length. What a 280px column can show is the column's own
+        // decision, and it needs the untruncated title to tell two similar threads apart with.
+        String title = namer.nameOf(id).orElseGet(() -> ConversationTitles.topic(firstQuestion));
+        String preview = ConversationTitles.shorten(
+                lastAnything.isBlank() ? firstQuestion : lastAnything, PREVIEW_LENGTH);
 
         return Optional.of(new ConversationSummary(
                 id,
                 title,
                 preview,
                 channelOf(id),
+                // Tags are not recorded anywhere. An empty list is the truthful answer; a guessed
+                // one would be indistinguishable on screen from a label the reader chose.
                 List.of(),
-                // The YAML frontmatter does carry updatedAt, but ChatMemoryRepository does not expose
-                // it. Guessing a time is worse than showing none, so the row simply has no time.
-                Optional.empty(),
+                activity.lastActivity(id),
                 ConversationSummary.Source.STORED));
+    }
+
+    /** One read of the store, with a conversation that cannot be read treated as absent. */
+    private List<Message> messagesOf(String id) {
+        try {
+            List<Message> messages = repository.findByConversationId(id);
+            return messages == null ? List.of() : messages;
+        } catch (RuntimeException e) {
+            log.warn("Could not read conversation {}; treating it as empty", id, e);
+            return List.of();
+        }
     }
 
     private static String firstText(List<Message> messages, MessageType type) {
@@ -141,7 +221,8 @@ class StoredConversationDirectory implements ConversationDirectory {
      *
      * <p>Conversation ids are channel names - {@code web}, {@code telegram-123456789} - so the part
      * before the first dash is genuine metadata rather than a guess, and it is the closest thing to
-     * a folder the store has today.
+     * a folder the store has today. It is not a folder the reader can create, move or rename, and
+     * the sidebar does not offer to: a control for something the store cannot record is a promise.
      */
     private static String channelOf(String id) {
         int dash = id.indexOf('-');
@@ -150,66 +231,5 @@ class StoredConversationDirectory implements ConversationDirectory {
             return "Conversations";
         }
         return channel.substring(0, 1).toUpperCase(Locale.ROOT) + channel.substring(1);
-    }
-
-    /** Cuts at a word boundary where there is one nearby, so a title does not end mid-word. */
-    private static String shorten(String text, int limit) {
-        String flat = text.strip().replaceAll("\\s+", " ");
-        if (flat.length() <= limit) {
-            return flat;
-        }
-        String cut = flat.substring(0, limit);
-        int lastSpace = cut.lastIndexOf(' ');
-        if (lastSpace > limit / 2) {
-            cut = cut.substring(0, lastSpace);
-        }
-        return cut.stripTrailing() + "…";
-    }
-
-    /**
-     * Rows that describe nothing real.
-     *
-     * <p>They exist because folders, tags and modification times have no home in the store yet, and
-     * a sidebar cannot be designed - or reviewed - against a single untitled row. Every one of them
-     * is marked {@link ConversationSummary.Source#SAMPLE}, carries {@code data-source="sample"} in
-     * the DOM, and is accounted for by the footnote under the list. They must be deleted, not
-     * quietly promoted, the day the store can answer these questions itself.
-     */
-    private static final class SampleConversations {
-
-        private static List<ConversationSummary> rows() {
-            Instant now = Instant.now();
-            return List.of(
-                    sample("sample-modulith", "Splitting the app into Modulith modules",
-                            "Where should the boundary between the chat module and the agent module sit?",
-                            "Architecture", List.of("modulith", "boundaries"), now.minus(40, ChronoUnit.MINUTES)),
-                    sample("sample-virtual-threads", "Virtual threads and the session lock",
-                            "Explain why holding the Vaadin session lock across a blocking model call freezes the browser.",
-                            "Architecture", List.of("concurrency", "vaadin"), now.minus(5, ChronoUnit.HOURS)),
-                    sample("sample-provider-swap", "Swapping Ollama for Anthropic",
-                            "What changes in configuration when the chat provider is switched at runtime?",
-                            "Architecture", List.of("providers"), now.minus(2, ChronoUnit.DAYS)),
-                    sample("sample-release-notes", "Draft release notes for 0.4",
-                            "Summarise the merged pull requests since the last tag into user-facing notes.",
-                            "Writing", List.of("release"), now.minus(26, ChronoUnit.HOURS)),
-                    sample("sample-readme", "Rewrite the README opening",
-                            "The first paragraph explains the build before it explains the product. Fix that.",
-                            "Writing", List.of("docs"), now.minus(9, ChronoUnit.DAYS)),
-                    sample("sample-gradle", "Gradle vs Maven for this build",
-                            "Compare incremental build behaviour for a multi-module JVM project.",
-                            "Scratch", List.of("build"), now.minus(3, ChronoUnit.HOURS)),
-                    sample("sample-regex", "A regex for ISO-8601 durations",
-                            "Match PT5M, P1DT2H and friends, rejecting the empty P.",
-                            "Scratch", List.of("regex"), now.minus(11, ChronoUnit.DAYS)));
-        }
-
-        private static ConversationSummary sample(String id, String title, String preview, String group,
-                                                  List<String> tags, Instant updatedAt) {
-            return new ConversationSummary(id, title, preview, group, tags, Optional.of(updatedAt),
-                    ConversationSummary.Source.SAMPLE);
-        }
-
-        private SampleConversations() {
-        }
     }
 }

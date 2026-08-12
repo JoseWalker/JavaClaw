@@ -15,8 +15,8 @@ import java.util.Optional;
  *
  * <p>{@link Source} is part of the record on purpose. Some of what a sidebar wants - folders, tags,
  * a modification time - is not recorded anywhere yet, and a UI that quietly invents it teaches the
- * reader to trust data that does not exist. Every row carries its provenance instead, and the
- * sidebar prints a footnote when any of it is a sample.
+ * reader to trust data that does not exist. Every row carries its provenance instead, so a row that
+ * is not yet backed by the store can be told apart from one that is, in the DOM as well as in Java.
  *
  * @param id       conversation id as the agent knows it; also the row's stable identity
  * @param title    one line, already shortened for a narrow column
@@ -41,7 +41,18 @@ public record ConversationSummary(
         /** Backed by a conversation that really exists in the chat store. */
         STORED,
 
-        /** Fabricated to exercise the layout while the real metadata does not exist yet. */
+        /**
+         * Fabricated to exercise the layout while the real metadata did not exist yet.
+         *
+         * <p>Nothing produces this any more. The directory used to append seven invented
+         * conversations under invented folders so the column looked inhabited, and once they were on
+         * screen there was no way for a reader to tell which half of their history was real. The
+         * constant is kept only so a stored value of it can still be read back; the day nothing can
+         * produce one, it goes.
+         *
+         * @deprecated no row is fabricated; a conversation is either stored or a draft
+         */
+        @Deprecated(forRemoval = true)
         SAMPLE,
 
         /** A chat the reader has started in this session but has not sent anything to yet. */
