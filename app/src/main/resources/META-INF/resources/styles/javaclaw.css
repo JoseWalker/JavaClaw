@@ -2927,23 +2927,16 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * Locked while a turn streams, and still a field.
+ * There is deliberately no rule for a composer with a turn streaming into it.
  *
- * It used to step down to the page ground, which measured 1.08:1 against the band in light and
- * 1.05:1 in dark - a field the same colour as the bar around it is not a field, it is a gap, and
- * for the length of every answer only the focus ring said otherwise. It keeps the raised tone every
- * other resting field has and gives up its elevation instead: what changes while a turn streams is
- * that the control stops standing off the page, not that it stops being one.
- *
- * That is also why there is no border-color here any more. This rule used to step the edge down to
- * --jc-border, which is 1.11:1 against the band, so for the length of every answer the composer had
- * neither a fill step nor a boundary. A field locked with [readonly] is not an inactive component -
- * it still holds focus, still shows the reader their own draft - so SC 1.4.11 still asks 3:1 of it,
- * and it keeps the 3.52:1/3.07:1 edge the resting rule draws. Elevation is the whole of the change.
+ * A `--busy` modifier used to drop the field's elevation for the length of every answer, and it
+ * made sense while the field was locked for exactly that long: a control the reader cannot use has
+ * no business standing off the page. The lock is gone - the reader may draft their next question
+ * while an answer arrives - so the state it painted no longer exists, and a field that is fully
+ * usable is painted the way every other resting field is. Nothing here is a contrast change: what
+ * that rule declared was a shadow, so the 3.52:1 / 3.13:1 edge above is what the composer has
+ * carried throughout.
  */
-.jc-composer__field--busy {
-    box-shadow: none;
-}
 
 .jc-composer__hint {
     display: block;
@@ -3088,12 +3081,15 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * Both attributes, because the field is locked with one and Vaadin dims it under the other.
+ * Nothing locks the composer today, and these four rules are the standing repair for the day
+ * something does.
  *
- * The composer is read-only while a turn streams rather than disabled: a disabled element cannot
- * hold focus, so locking a field the reader is typing in moves the caret to the document body and
- * their next Tab restarts at the top of the page. [disabled] is kept in the selector because
- * nothing else in this stylesheet would restore the field if it were ever locked that way again.
+ * The composer used to go read-only for the length of every answer, which is the state they were
+ * written for; that lock has been removed, because a read-only field is indistinguishable on screen
+ * from an editable one and went on inviting a reader to type into a control that dropped every
+ * keystroke. What is kept is the repair, for both attributes: Vaadin dims and de-borders a locked
+ * field in ways this shell has to undo, and nothing else in this stylesheet would undo them. Read
+ * them as a guard rather than as a description of a state the reader can reach.
  */
 .jc-composer vaadin-text-area[disabled],
 .jc-composer vaadin-text-area[readonly] {
@@ -3110,7 +3106,7 @@ vaadin-dialog::part(footer) {
  * else.
  */
 /*
- * The dashed rectangle that appeared for the length of every answer.
+ * The dashed rectangle that used to appear for the length of every answer.
  *
  * Lumo paints a locked field with a dashed border, declared as a shorthand - so
  * `--vaadin-input-field-border-width: 0` above never reached it, and the rule that strips the input
@@ -3137,15 +3133,11 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * The focus ring is the whole point of locking the field this way, so it must survive the lock. The
- * shell carries the ring on :focus-within and the busy modifier resets the box-shadow underneath
- * it; without this the reader keeps focus and loses every sign of it.
+ * The focus ring while a turn streams needed a rule of its own only because the busy modifier reset
+ * the box-shadow the ring is drawn in. Both are gone together: the composer is an ordinary focused
+ * field for the whole of an answer, so .jc-composer__field:focus-within above is the only ring it
+ * has ever needed.
  */
-.jc-composer__field--busy:focus-within {
-    border-color: var(--jc-accent);
-    box-shadow: 0 0 0 var(--jc-focus-ring-width) var(--jc-focus-ring-color),
-                0 0 0 calc(var(--jc-focus-ring-width) + 3px) var(--jc-focus-ring-halo);
-}
 
 /* ==========================================================================
  * 9. Buttons

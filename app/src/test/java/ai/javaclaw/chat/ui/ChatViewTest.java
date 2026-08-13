@@ -5,6 +5,7 @@ import ai.javaclaw.agent.ResponseListener;
 import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.ComponentUtil;
+import com.vaadin.flow.component.KeyDownEvent;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.internal.PendingJavaScriptInvocation;
 import com.vaadin.flow.component.textfield.TextArea;
@@ -12,6 +13,7 @@ import com.vaadin.flow.dom.Element;
 import com.vaadin.flow.internal.JacksonUtils;
 import com.vaadin.flow.internal.StateTree;
 import com.vaadin.flow.internal.change.MapPutChange;
+import com.vaadin.flow.server.Command;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -21,8 +23,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.AbstractExecutorService;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
@@ -258,35 +262,156 @@ class ChatViewTest {
     // ------------------------------------------------------- while it streams
 
     /**
-     * Disabling a focused field moves focus to the document body, which costs the reader their
-     * place for the whole turn: the caret is gone from the control they are sitting at, and the
-     * next Tab starts again from the top of the page rather than from the composer. Read-only
-     * refuses the same keystrokes and keeps the element focusable and in the tab order, which is
-     * the only difference that matters here.
+     * The severity-1 defect this pins, and the reason the lock was removed rather than labelled.
+     *
+     * <p>The composer used to go read-only for the length of every answer, and a read-only Vaadin
+     * text area is pixel-identical to an editable one: same fill, same placeholder, same caret,
+     * same focus ring. So the largest control on the screen went on saying "Ask anything" and
+     * silently dropped every character typed into it - an interface asserting one thing and doing
+     * another, for the whole of every turn, with no way for the reader to tell which of the two was
+     * true. Labelling the lock would have made the assertion honest; removing it makes the
+     * assertion true, which is the fix that was chosen.
+     *
+     * <p>The field also has to stay enabled, for the reason the lock was preferred to a disable in
+     * the first place: a disabled element cannot hold focus, so locking a field the reader is
+     * sitting in moves the caret to the document body and their next Tab restarts at the top of the
+     * page.
      */
     @Test
-    @DisplayName("a streaming turn locks the composer without taking it out of the tab order")
-    void keepsTheComposerFocusableWhileStreaming() {
+    @DisplayName("the composer stays editable while an answer streams")
+    void keepsTheComposerEditableWhileStreaming() {
         ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
         composer(view).setValue("How do they work?");
 
         click(action(view, "Send message"));
 
-        assertThat(composer(view).isReadOnly()).isTrue();
+        assertThat(composer(view).isReadOnly()).isFalse();
         assertThat(composer(view).isEnabled()).isTrue();
         assertThat(composer(view).getElement().getProperty("disabled", false)).isFalse();
     }
 
     @Test
-    @DisplayName("stopping a turn hands the composer back")
+    @DisplayName("stopping a turn puts the send action back in the button")
     void releasesTheComposerWhenTheTurnIsStopped() {
         ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
         composer(view).setValue("How do they work?");
         click(action(view, "Send message"));
+        assertThat(offersStop(view)).isTrue();
 
         click(action(view, "Stop responding"));
 
+        assertThat(offersStop(view)).isFalse();
         assertThat(composer(view).isReadOnly()).isFalse();
+    }
+
+    /**
+     * The point of letting the reader type while an answer streams: the draft has to be worth
+     * something when the answer ends.
+     *
+     * <p>Two failures are pinned at once, and they are the two ways this change could have been
+     * got wrong. A draft cleared or reverted when the turn closes would make typing during an
+     * answer pointless, which is the read-only composer again with extra steps. A send button left
+     * disabled after the turn closes - it is enabled during the turn only because it is a Stop
+     * control - would leave the reader holding a question they cannot send.
+     */
+    @Test
+    @DisplayName("a draft typed while an answer streams is sendable the moment the answer ends")
+    void aDraftTypedWhileStreamingSurvivesAndSends() {
+        RecordingAgent agent = new RecordingAgent();
+        ChatView view = attached(agent, new FakeTranscripts());
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+
+        composer(view).setValue("And what about pinning?");
+        click(action(view, "Stop responding"));
+        assertThat(composerValue(view)).isEqualTo("And what about pinning?");
+        click(action(view, "Send message"));
+
+        assertThat(agent.asked).containsExactly("How do they work?", "And what about pinning?");
+    }
+
+    /**
+     * A deliberate keystroke that does nothing and says nothing is the same defect as the composer
+     * that looked editable and was not: the reader cannot tell a refusal from a broken key.
+     *
+     * <p>What is refused is only the send. The line the composer already keeps for saying what is
+     * going on is where the answer goes - the reader is looking at it, the busy hint it replaces
+     * was already there, and it restores itself when the turn ends. It is announced through the
+     * live region that was there from the first paint, so a reader who cannot see the line is told
+     * the same thing.
+     */
+    @Test
+    @DisplayName("Enter while an answer streams says why, rather than swallowing the keystroke")
+    void enterWhileStreamingIsAnswered() {
+        ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+        composer(view).setValue("And what about pinning?");
+
+        pressEnter(view);
+
+        assertThat(hintText(view)).contains("nothing was sent");
+        assertThat(announcement(view)).contains("nothing was sent");
+    }
+
+    /**
+     * The other half of the choice, and the reason it is not a toast: an Enter with nothing to send
+     * is answered with silence, because that is what the same keystroke does when no turn is
+     * running. A reader who pressed it lost nothing, so there is nothing to report - and reporting
+     * it anyway would put a refusal on the screen for every stray Return during a long answer.
+     */
+    @Test
+    @DisplayName("Enter on an empty composer while streaming says nothing at all")
+    void enterWithNothingToSendIsSilent() {
+        ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+
+        pressEnter(view);
+
+        assertThat(hintText(view)).contains("JavaClaw is responding");
+        assertThat(hintText(view)).doesNotContain("nothing was sent");
+    }
+
+    /**
+     * Fail closed: however the stream ends, the composer ends up sendable.
+     *
+     * <p>A composer stuck at "Stop" is worse than the defect this change fixes - the reader has no
+     * way back to sending at all, and the only control offered cancels a turn that is already over.
+     * The failure path is the one that gets there, because it is the path nobody exercises by hand.
+     * The draft typed while the answer was still arriving has to survive it too: the error belongs
+     * to the answer, not to the question the reader is in the middle of writing.
+     */
+    @Test
+    @DisplayName("an answer that fails hands the composer back with the draft intact")
+    void aFailedAnswerHandsTheComposerBackWithTheDraftIntact() {
+        ControllableAgent agent = new ControllableAgent();
+        ChatView view = attachedTo(new InlineUi(), agent, new FakeTranscripts());
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+        composer(view).setValue("And what about pinning?");
+
+        agent.fail("The provider hung up");
+
+        assertThat(offersStop(view)).isFalse();
+        assertThat(composerValue(view)).isEqualTo("And what about pinning?");
+        assertThat(sendIsEnabled(view)).isTrue();
+    }
+
+    @Test
+    @DisplayName("an answer that completes hands the composer back with the draft intact")
+    void aCompletedAnswerHandsTheComposerBackWithTheDraftIntact() {
+        ControllableAgent agent = new ControllableAgent();
+        ChatView view = attachedTo(new InlineUi(), agent, new FakeTranscripts());
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+        composer(view).setValue("And what about pinning?");
+
+        agent.complete();
+
+        assertThat(offersStop(view)).isFalse();
+        assertThat(composerValue(view)).isEqualTo("And what about pinning?");
+        assertThat(sendIsEnabled(view)).isTrue();
     }
 
     /**
@@ -307,11 +432,13 @@ class ChatViewTest {
         UI ui = view.getUI().orElseThrow();
         composer(view).setValue("How do they work?");
         click(action(view, "Send message"));
-        assertThat(composer(view).isReadOnly()).isTrue();
+        // Whether a turn is running is read off the button's own job rather than off the field,
+        // which no longer changes at all while an answer streams.
+        assertThat(offersStop(view)).isTrue();
 
         UiHarness.press(ui.getElement(), "Escape");
 
-        assertThat(composer(view).isReadOnly()).isFalse();
+        assertThat(offersStop(view)).isFalse();
     }
 
     /**
@@ -329,10 +456,17 @@ class ChatViewTest {
 
         UiHarness.press(ui.getElement(), "Escape");
 
-        assertThat(composer(view).isReadOnly()).isFalse();
+        assertThat(offersStop(view)).isFalse();
         assertThat(composerValue(view)).isEqualTo("A draft nobody has sent");
     }
 
+    /**
+     * No implicit send queue. The keystroke is now pressed rather than assumed, because the wrong
+     * fix for the refusal it meets is to remember the message and dispatch it when the turn ends -
+     * which would put a question the reader never watched leave into a conversation that has moved
+     * on since they typed it. That is the same dishonesty as a composer that looks editable and is
+     * not, so it is asserted against here: one question asked, and the second still in the field.
+     */
     @Test
     @DisplayName("Enter is refused while a turn streams rather than sending a second question")
     void refusesASecondQuestionWhileStreaming() {
@@ -342,9 +476,11 @@ class ChatViewTest {
         click(action(view, "Send message"));
 
         composer(view).setValue("And again");
+        pressEnter(view);
         click(action(view, "Stop responding"));
 
         assertThat(agent.asked).containsExactly("How do they work?");
+        assertThat(composerValue(view)).isEqualTo("And again");
     }
 
     // ------------------------------------------------------- answering again
@@ -462,6 +598,24 @@ class ChatViewTest {
     }
 
     /**
+     * The same view, in a UI the caller has chosen.
+     *
+     * <p>Only the tests that end a turn need this, and they need it for the UI's {@code access}:
+     * the agent's completion and failure callbacks arrive on a worker and are pushed back through
+     * it, so a UI that does not run what it is handed leaves those two paths untested.
+     *
+     * @param ui          the UI to attach into, already configured by the caller
+     * @param agent       the agent the view puts questions to
+     * @param transcripts the store the view reads and writes
+     * @return the view, attached and ready to be asked a question
+     */
+    private static ChatView attachedTo(UI ui, Agent agent, ConversationTranscripts transcripts) {
+        ChatView view = new ChatView(agent, new SameThreadExecutor(), transcripts, new ConversationActivity());
+        ui.add(view);
+        return view;
+    }
+
+    /**
      * The same view, in a UI that has a session behind it.
      *
      * <p>Only the keystroke tests need this, and they need it for one reason: driving a real DOM
@@ -543,6 +697,55 @@ class ChatViewTest {
 
     private static String composerValue(ChatView view) {
         return composer(view).getValue();
+    }
+
+    /**
+     * Whether the composer's one button is currently offering to stop an answer.
+     *
+     * <p>This is how these tests ask "is a turn running". They used to ask the field, which was
+     * read-only for exactly that long; it no longer changes at all while an answer streams, so the
+     * question has to be put to the thing that does change.
+     *
+     * @param view the view under test
+     * @return true while the button is a Stop control
+     */
+    private static boolean offersStop(ChatView view) {
+        return !actions(view, "Stop responding").isEmpty();
+    }
+
+    /**
+     * Whether the send button is pressable.
+     *
+     * @param view the view under test, which must not be streaming - while it is, the button is
+     *             labelled as a Stop control and this lookup fails rather than answering about it
+     * @return true when the button would send what is in the composer
+     */
+    private static boolean sendIsEnabled(ChatView view) {
+        return action(view, "Send message").isEnabled();
+    }
+
+    /** The line under the composer, which says what is going on and why something did not happen. */
+    private static String hintText(ChatView view) {
+        return byClass(view, "jc-composer__hint").getTextRecursively();
+    }
+
+    /** What the off-screen live region is currently saying. */
+    private static String announcement(ChatView view) {
+        return byClass(view, "jc-announcer").getTextRecursively();
+    }
+
+    /**
+     * Presses Enter in the composer, unmodified.
+     *
+     * <p>Fired as the event rather than by calling the handler: what is under test is that a plain
+     * Enter reaches a listener which refuses to send and says so, and a test that called the
+     * refusal directly would pass on a view where nothing was listening.
+     *
+     * @param view the view whose composer receives the keystroke
+     */
+    private static void pressEnter(ChatView view) {
+        TextArea prompt = composer(view);
+        ComponentUtil.fireEvent(prompt, new KeyDownEvent(prompt, "Enter"));
     }
 
     /** The composer at the foot of the view, told apart from a message editor by its label. */
@@ -687,6 +890,80 @@ class ChatViewTest {
         @Override
         public <T> T prompt(String conversationId, String input, Class<T> result) {
             throw new UnsupportedOperationException("Not asked in these tests");
+        }
+    }
+
+    /**
+     * An agent that starts a turn and leaves it open until the test says how it ends.
+     *
+     * <p>{@link RecordingAgent} answers nothing and therefore never closes a turn, which is what
+     * the tests about a <em>running</em> answer want. The two paths out of a turn that nobody
+     * exercises by hand - the provider completing, and the provider failing - need the listener
+     * kept and called later, and that is the whole of what this adds.
+     */
+    private static final class ControllableAgent implements Agent {
+
+        /** The listener of the turn currently open, or null before the first question. */
+        private ResponseListener listener;
+
+        @Override
+        public String respondTo(String conversationId, String question) {
+            throw new UnsupportedOperationException("The streaming form is the one under test");
+        }
+
+        @Override
+        public String respondTo(String conversationId, String question, ResponseListener listener) {
+            this.listener = listener;
+            return "";
+        }
+
+        @Override
+        public <T> T prompt(String conversationId, String input, Class<T> result) {
+            throw new UnsupportedOperationException("Not asked in these tests");
+        }
+
+        /**
+         * Ends the open turn the way a provider that broke mid-answer would.
+         *
+         * @param message what went wrong, as the view would be told it
+         */
+        void fail(String message) {
+            open().onError(message);
+        }
+
+        /** Ends the open turn the way a provider that finished normally would. */
+        void complete() {
+            open().onComplete();
+        }
+
+        /**
+         * @return the listener of the turn in progress
+         * @throws AssertionError when no question has been asked, which would otherwise surface as
+         *                        a null dereference several frames away from the mistake
+         */
+        private ResponseListener open() {
+            if (listener == null) {
+                throw new AssertionError("No turn is open: nothing has been asked yet");
+            }
+            return listener;
+        }
+    }
+
+    /**
+     * A UI that runs what a worker hands it, immediately and on the calling thread.
+     *
+     * <p>{@code UI.access} normally goes through the session: it locks, runs, unlocks and pushes.
+     * There is no session here and nothing to lock against - these tests run the whole exchange on
+     * one thread - and standing up a real one needs a servlet and a deployment configuration.
+     * Overriding the one method is what makes a completion or a failure observable at all; without
+     * it those callbacks are queued against a session that does not exist and the turn never ends.
+     */
+    private static final class InlineUi extends UI {
+
+        @Override
+        public Future<Void> access(Command command) {
+            command.execute();
+            return CompletableFuture.completedFuture(null);
         }
     }
 

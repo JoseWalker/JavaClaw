@@ -132,6 +132,19 @@ public class ChatView extends Div implements ConversationHost {
     private static final String REWIND_REFUSED =
             "That message could not be re-asked, so the conversation is unchanged.";
 
+    /**
+     * Said when Enter is pressed on a draft while an answer is still arriving.
+     *
+     * <p>Three claims, and the sentence is wrong without any of them. That nothing was sent, so the
+     * reader is not left wondering whether a question is in flight. That the draft is kept, because
+     * the fear a refusal creates is that the text is gone. And that sending it is theirs to do when
+     * the answer ends - which rules out the reading this application must not invite, that the
+     * message is queued and will leave on its own into a conversation that has moved on since.
+     */
+    private static final String STILL_RESPONDING =
+            "JavaClaw is still responding, so nothing was sent. Your message is kept - send it when "
+                    + "the answer ends.";
+
     private final transient Agent agent;
     private final transient ExecutorService responseExecutor;
     private final transient ConversationTranscripts transcripts;
@@ -390,9 +403,14 @@ public class ChatView extends Div implements ConversationHost {
         prompt.addValueChangeListener(event -> updateSendEnabled());
         prompt.addKeyDownListener(Key.ENTER, event -> {
             // Shift + Enter has to reach the textarea so a message can span several lines.
-            if (!event.getModifiers().contains(KeyModifier.SHIFT)) {
-                submit();
+            if (event.getModifiers().contains(KeyModifier.SHIFT)) {
+                return;
             }
+            if (streaming) {
+                refuseSendWhileStreaming();
+                return;
+            }
+            submit();
         });
 
         send.addClassName("jc-send");
@@ -865,6 +883,17 @@ public class ChatView extends Div implements ConversationHost {
 
     // ----------------------------------------------------------------- behaviour
 
+    /**
+     * Sends what is in the composer, if anything is.
+     *
+     * <p>The streaming guard is a backstop rather than the behaviour a reader meets: every caller
+     * that can be reached while a turn is running answers the keystroke itself, in
+     * {@link #refuseSendWhileStreaming}. It stays because a second question dispatched into a
+     * running turn would overwrite the fields tracking that turn, and this method must refuse that
+     * whatever a future caller believes about the state it is in.
+     *
+     * <p>Must run on the Vaadin UI thread; it reads and writes attached components.
+     */
     private void submit() {
         if (streaming) {
             return;
@@ -875,6 +904,40 @@ public class ChatView extends Div implements ConversationHost {
         }
         prompt.clear();
         ask(question);
+    }
+
+    /**
+     * Answers an Enter pressed on a draft while an answer is still arriving.
+     *
+     * <p>Nothing is sent and nothing is queued. A queue was rejected outright: it would dispatch a
+     * message the reader never watched leave, at a moment they did not choose, into a conversation
+     * that has moved on since they wrote it - the same class of dishonesty as a composer that looks
+     * editable and is not. So the draft stays where it is and becomes sendable the instant the turn
+     * ends, which is a promise the composer can keep without doing anything.
+     *
+     * <p>It is answered rather than ignored, and the choice is between two small lies. Silence
+     * makes a deliberate keystroke indistinguishable from a broken key, which is exactly the defect
+     * the read-only composer had. A toast or a dialog would interrupt a reader over something they
+     * can see for themselves, and would have to be dismissed. The middle is the line the composer
+     * already keeps for saying what is going on: it is where the reader is looking, it replaces a
+     * hint that was already there, and {@link #setStreaming} restores that hint when the turn ends,
+     * so the refusal cannot outlive the reason for it.
+     *
+     * <p>An empty composer is answered with silence, because Enter on an empty composer sends
+     * nothing while idle either and a reader who pressed it has lost nothing to be told about.
+     *
+     * <p>Repeats are quiet by construction. A held Enter writes the same sentence into the same
+     * line, so neither the hint nor the live region's element changes, and assistive technology is
+     * told once rather than once per repeat.
+     *
+     * <p>Must run on the Vaadin UI thread; it is a key listener and Vaadin only calls it there.
+     */
+    private void refuseSendWhileStreaming() {
+        String draft = prompt.getValue();
+        if (draft == null || draft.isBlank()) {
+            return;
+        }
+        showNotice(STILL_RESPONDING);
     }
 
     /**
@@ -1152,27 +1215,37 @@ public class ChatView extends Div implements ConversationHost {
     }
 
     /**
-     * Moves the composer between its two states. While a turn streams the field is locked and the
-     * button becomes a stop control - enabled, because a dead slab is not an affordance.
+     * Moves the composer between its two states: while a turn streams the button becomes a stop
+     * control - enabled, because a dead slab is not an affordance - and the hint line says so.
      *
-     * <p>Read-only rather than disabled, and the difference is the reader's place on the page. A
-     * disabled element cannot hold focus, so locking a field the reader is sitting in moves the
-     * caret to the document body for the length of the turn and their next Tab starts again from
-     * the top of the page. Read-only refuses exactly the same keystrokes and keeps the element
-     * focusable and in the tab order. Enter is refused by {@link #submit} either way.
+     * <p>The field itself does not change, and that is the whole of the fix here. It used to be put
+     * into read-only for the length of every turn, which is where the interface started lying: a
+     * read-only Vaadin text area is pixel-identical to an editable one - same fill, same
+     * placeholder, same caret, same focus ring - so the largest control on the screen went on
+     * inviting the reader to type and silently dropped every character they typed. Two exits were
+     * available and only one of them ends the lie. Labelling the lock makes the invitation honest;
+     * removing it makes the invitation true. The second was chosen, and it is also what the
+     * product this composer is measured against does: the reader may draft their next question
+     * while an answer arrives.
+     *
+     * <p>What is still refused is sending, and only sending. The primary action for the length of a
+     * turn is Stop, and Enter is answered by {@link #refuseSendWhileStreaming} rather than queued.
+     *
+     * <p>The field's appearance is left to the stylesheet's resting rules for the same reason. It
+     * carried a {@code --busy} modifier while it was locked, and that modifier died with the lock:
+     * a control the reader can use is not one to paint as unavailable.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to attached components.
+     *
+     * @param busy true from the moment a question is sent until its answer completes, fails or is
+     *             stopped
      */
     private void setStreaming(boolean busy) {
         streaming = busy;
-        prompt.setReadOnly(busy);
         // Busy while the tokens arrive. Without it a log region announces every fragment as it
         // lands, which is a screen reader reading an answer one word at a time for thirty seconds;
         // with it, the additions are held and read once when the turn closes.
         markTranscriptBusy(busy);
-
-        composerField.setClassName("jc-composer__field");
-        if (busy) {
-            composerField.addClassName("jc-composer__field--busy");
-        }
 
         sendGlyph.setClassName("jc-glyph");
         sendGlyph.addClassName(busy ? "jc-glyph--stop" : "jc-glyph--arrow-up");

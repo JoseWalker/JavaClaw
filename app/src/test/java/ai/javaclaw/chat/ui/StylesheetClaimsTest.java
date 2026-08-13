@@ -267,14 +267,6 @@ class StylesheetClaimsTest {
         assertThat(boundaryFailures(BOUNDED_CONTROL_STATES))
                 .as("control boundaries that fall under 3:1 in a state the reader can reach")
                 .isEmpty();
-
-        // The one control that is bounded in a state and declares no boundary of its own, which is
-        // the point: a field locked while a turn streams is read-only, not inactive, so it keeps the
-        // edge its resting rule draws. What it gives up is elevation. Declaring a softer colour here
-        // is what put a 1.11:1 edge on the composer for the length of every answer.
-        assertThat(ruleFor(".jc-composer__field--busy {"))
-                .as("the locked composer keeps the resting boundary rather than stepping it down")
-                .doesNotContain("border-color:");
     }
 
     @Test
@@ -465,22 +457,32 @@ class StylesheetClaimsTest {
         // property further up cannot reach. For three rounds a 1px dashed rect therefore appeared for
         // the length of every turn, nested 12px inside our own accent focus ring, in a slate that
         // exists nowhere else in the palette - on the one control the reader is watching.
+        //
+        // Nothing locks the composer today: the read-only state that defect lived in has been
+        // removed, because a read-only field looks exactly like an editable one and went on
+        // inviting a reader to type into a control that swallowed the result. The repair is kept
+        // under both attributes anyway, and asserted here, so that whatever locks this field next -
+        // an upload in flight, a session expiring - does not bring the dash back with it.
         assertThat(ruleFor(".jc-composer vaadin-text-area[readonly]::part(input-field)"))
                 .contains("border: 0");
-        // Locked with [readonly] today; the disabled path is carried for the same reason the rule
-        // above it carries it, so nothing restores the dash if the lock ever changes.
         assertThat(css).contains(".jc-composer vaadin-text-area[disabled]::part(input-field)");
     }
 
     @Test
-    @DisplayName("the field a turn is streaming into is still painted as a field")
-    void theBusyFieldKeepsAFillOfItsOwn() {
-        String busy = ruleFor(".jc-composer__field--busy {");
-        // The rule's own comment states the intent its old value failed: stepping down to the page
-        // ground put the locked field within 1.05:1 of the band it sits in, so nothing but the focus
-        // ring said it was a control. It keeps the idle field's raised tone and gives up its shadow.
-        assertThat(busy).doesNotContain("background:");
-        assertThat(busy).contains("box-shadow: none");
+    @DisplayName("the composer has no rule for a streaming state it no longer has")
+    void noRuleSurvivesForTheStreamingComposer() {
+        // `--busy` existed to paint a field that was locked for the length of every answer: it
+        // dropped the elevation, and a companion rule put the focus ring back underneath it. The
+        // field is no longer locked - the reader may draft their next question while an answer
+        // streams - so the modifier described a state the composer does not enter, and a class the
+        // stylesheet paints but nothing can ever wear is a rule the next reader has to disprove.
+        //
+        // Removing it costs no contrast: what it declared was a shadow, so the field keeps the
+        // resting border BOUNDED_CONTROLS already measures at 3.52:1 in light and 3.13:1 in dark,
+        // and it keeps the raised fill and the ordinary :focus-within ring with it.
+        assertThat(css)
+                .as("a modifier for a composer state that no longer exists")
+                .doesNotContain("jc-composer__field--busy");
     }
 
     @Test
