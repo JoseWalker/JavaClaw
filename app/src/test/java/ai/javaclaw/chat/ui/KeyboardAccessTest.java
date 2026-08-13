@@ -253,6 +253,128 @@ class KeyboardAccessTest {
         assertThat(afterExpanding.getLast()).contains("jc-sidebar__collapse");
     }
 
+    /**
+     * That the page behind an open drawer is out of play, all of it.
+     *
+     * <p>The drawer already behaved as a modal - a scrim over the content, Escape as an exit, and
+     * {@code role="dialog"} on the column - and only part of what it covered was taken out of play.
+     * {@code inert} went on the content region, which is the transcript and the composer; the bar
+     * above them is a sibling of that region, not a child, so the drawer toggle and the theme control
+     * stayed focusable and stayed in the accessibility tree the whole time the drawer was open,
+     * behind a shade that had already told the reader they were gone.
+     *
+     * <p>Asserted over everything outside the column rather than over the two controls that happened
+     * to be reachable, because the property is that the drawer covers the page, not that it covers
+     * the header. A control added to the bar later must not reintroduce this.
+     *
+     * <p>Fails on the original on both of the bar's controls.
+     */
+    @Test
+    @DisplayName("nothing behind an open drawer can be reached or heard")
+    void theDrawerTakesTheWholePageBehindItOutOfPlay() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(stored("web-abc", "Comparing build tools")),
+                new MockEnvironment());
+        ui.add(shell);
+        // A phone, which is the one arrangement where the column covers what it navigates.
+        UiHarness.resizeTo(ui, 390, 844);
+
+        UiHarness.press(ui.getElement(), "KeyB");
+
+        Element column = byClass(shell.getElement(), "jc-sidebar");
+        assertThat(reachableOutside(shell, column))
+                .as("controls behind the scrim that a Tab or a screen reader can still reach")
+                .isEmpty();
+        // And the drawer itself is not caught by its own rule, which would leave nothing reachable
+        // anywhere and is the way this fix fails.
+        assertThat(inertAbove(shell.getElement(), byClass(column, "jc-search"))).isFalse();
+    }
+
+    /**
+     * The other half: closing the drawer gives the page back.
+     *
+     * <p>An inert attribute that is set and never cleared is a worse defect than the one it fixes,
+     * because it is silent - the page is simply dead to the keyboard with nothing on screen to say
+     * why.
+     */
+    @Test
+    @DisplayName("closing the drawer gives the page behind it back")
+    void closingTheDrawerReleasesThePage() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(stored("web-abc", "Comparing build tools")),
+                new MockEnvironment());
+        ui.add(shell);
+        UiHarness.resizeTo(ui, 390, 844);
+
+        UiHarness.press(ui.getElement(), "KeyB");
+        UiHarness.press(ui.getElement(), "KeyB");
+
+        assertThat(descendants(shell.getElement()).filter(element -> element.hasAttribute("inert")))
+                .as("anything still out of play once the drawer has closed")
+                .isEmpty();
+    }
+
+    /**
+     * Every control outside the column that a keyboard or a screen reader could still reach.
+     *
+     * @param shell  the application shell
+     * @param column the conversation column, whose own contents are meant to be reachable
+     * @return one description per reachable control, empty when the page behind is properly inert
+     */
+    private static List<String> reachableOutside(MainLayout shell, Element column) {
+        List<Element> insideColumn = descendants(column).toList();
+        return descendants(shell.getElement())
+                .filter(element -> element != column && !insideColumn.contains(element))
+                .filter(KeyboardAccessTest::takesFocus)
+                .filter(element -> !inertAbove(shell.getElement(), element))
+                .map(element -> "<" + element.getTag() + "> "
+                        + String.join(" ", element.getClassList()))
+                .toList();
+    }
+
+    /**
+     * Whether the browser would let focus land on an element.
+     *
+     * <p>Deliberately generous: anything that declares a non-negative tabindex, and every tag that is
+     * focusable without one. A false positive here costs nothing - the whole region behind the drawer
+     * is meant to be inert, so a non-control caught by this is still covered - while a false negative
+     * would be exactly the hole this test exists to find.
+     *
+     * @param element the element to judge
+     * @return true when a Tab could stop on it
+     */
+    private static boolean takesFocus(Element element) {
+        // A text node has no tag and no attributes, and asking it for either throws.
+        if (element.isTextNode()) {
+            return false;
+        }
+        String tabindex = element.getAttribute("tabindex");
+        if (tabindex != null) {
+            return !tabindex.startsWith("-");
+        }
+        return List.of("button", "a", "input", "textarea", "select").contains(element.getTag())
+                || element.getTag().startsWith("vaadin-");
+    }
+
+    /**
+     * Whether an element sits inside an inert subtree.
+     *
+     * @param root    where to stop climbing
+     * @param element the element to test, which counts as inert if it carries the attribute itself
+     * @return true when the browser would refuse it focus and hide it from assistive technology
+     */
+    private static boolean inertAbove(Element root, Element element) {
+        for (Element at = element; at != null; at = at.getParent()) {
+            if (at.hasAttribute("inert")) {
+                return true;
+            }
+            if (at.equals(root)) {
+                return false;
+            }
+        }
+        return false;
+    }
+
     @Test
     @DisplayName("the conversation list does not claim to be a list of things that are not items")
     void theSidebarDoesNotMisdeclareItsRows() {
@@ -713,6 +835,18 @@ class KeyboardAccessTest {
             }
             List<TranscriptTurn> turns = byConversation.computeIfAbsent(id, key -> new ArrayList<>());
             TranscriptTurn turn = new TranscriptTurn(id + "-" + turns.size(), role, text);
+            turns.add(turn);
+            return Optional.of(turn);
+        }
+
+        @Override
+        public Optional<TranscriptTurn> appendFailure(String id, FailureNotice notice) {
+            if (notice == null) {
+                return Optional.empty();
+            }
+            List<TranscriptTurn> turns = byConversation.computeIfAbsent(id, key -> new ArrayList<>());
+            TranscriptTurn turn = new TranscriptTurn(id + "-" + turns.size(),
+                    ConversationMessage.Role.ASSISTANT, notice.sentence(), TranscriptTurn.Outcome.FAILED);
             turns.add(turn);
             return Optional.of(turn);
         }

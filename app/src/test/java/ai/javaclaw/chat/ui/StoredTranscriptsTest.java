@@ -189,6 +189,63 @@ class StoredTranscriptsTest {
         assertThat(transcripts.turns("web-abc")).isEmpty();
     }
 
+    /**
+     * A turn that failed is a turn that happened.
+     *
+     * <p>Nothing was recorded for one, so reopening a conversation showed the question alone - a
+     * question that appears never to have been asked. What is written is this application's own
+     * notice rather than the provider's sentence, and it is marked as a failure so the transcript
+     * can draw it as one instead of as something the model said.
+     *
+     * <p>Fails on the original: there was no way to record a failure at all.
+     */
+    @Test
+    @DisplayName("a failed turn is recorded, and comes back marked as the failure it was")
+    void recordsAFailedTurn() throws IOException {
+        StoredTranscripts transcripts = transcripts(new FakeMemory(), new EmptyDirectory());
+        transcripts.append("web-abc", ConversationMessage.Role.USER, "How do they work?");
+
+        transcripts.appendFailure("web-abc", FailureNotice.RATE_LIMITED);
+
+        List<TranscriptTurn> turns = transcripts.turns("web-abc");
+        assertThat(turns).hasSize(2);
+        assertThat(turns.get(1).outcome()).isEqualTo(TranscriptTurn.Outcome.FAILED);
+        assertThat(turns.get(1).role()).isEqualTo(ConversationMessage.Role.ASSISTANT);
+        assertThat(turns.get(1).text()).isEqualTo(FailureNotice.RATE_LIMITED.sentence());
+        // Read back off disk rather than out of memory: the flag has to survive the file.
+        assertThat(transcripts.turns("web-abc").get(1).outcome())
+                .isEqualTo(TranscriptTurn.Outcome.FAILED);
+    }
+
+    @Test
+    @DisplayName("the model is never told it said the thing that failed")
+    void keepsAFailureOutOfTheModelsHistory() throws IOException {
+        FakeMemory memory = new FakeMemory();
+        StoredTranscripts transcripts = transcripts(memory, new EmptyDirectory());
+        transcripts.append("web-abc", ConversationMessage.Role.USER, "First question");
+        transcripts.appendFailure("web-abc", FailureNotice.UNREACHABLE);
+        TranscriptTurn second = transcripts.append("web-abc", ConversationMessage.Role.USER, "Second question")
+                .orElseThrow();
+        transcripts.append("web-abc", ConversationMessage.Role.ASSISTANT, "Second answer");
+
+        transcripts.rewindTo("web-abc", second.id());
+
+        // A rewind is the one operation that writes the transcript back into the model's history,
+        // and this application's apology is not something the assistant ever said.
+        assertThat(memory.findByConversationId("web-abc")).extracting(Message::getText)
+                .containsExactly("First question");
+    }
+
+    @Test
+    @DisplayName("a failure is never recorded against a conversation this application cannot name")
+    void refusesToRecordAFailureForAnIllFormedId() throws IOException {
+        StoredTranscripts transcripts = transcripts(new FakeMemory(), new EmptyDirectory());
+
+        assertThat(transcripts.appendFailure("../../etc/passwd", FailureNotice.UNKNOWN)).isEmpty();
+        assertThat(transcripts.appendFailure("web-abc", null)).isEmpty();
+        assertThat(transcripts.turns("web-abc")).isEmpty();
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private StoredTranscripts transcripts(ChatMemoryRepository memory, ConversationDirectory directory)

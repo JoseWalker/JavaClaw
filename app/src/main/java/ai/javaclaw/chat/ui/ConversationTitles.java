@@ -39,9 +39,24 @@ import java.util.regex.Pattern;
  * past the reader's eye on a wide one. Unequal is a property of the strings; distinguishable is a
  * property of the rows, and the rows are what the reader has.
  *
- * <p>So the guarantee is stated where it is read: no two labels agree over their first
- * {@link #GLANCE} display columns. See {@link #forColumn} for how that is reached, and what is given
- * up to reach it.
+ * <p>So the guarantee is stated where it is read: no two labels are alike over the part of the row
+ * the column is certain to draw - {@link #DRAWN} display columns. See {@link #forColumn} for how that
+ * is reached, and what is given up to reach it.
+ *
+ * <h2>Why the guarantee is about what is drawn rather than about what is scanned</h2>
+ *
+ * <p>It used to be the stronger claim: no two labels alike over the leading {@link #GLANCE} columns,
+ * a third of the row. That is a fine thing to want and a ruinous thing to require. Requiring it made
+ * every pair of rows sharing sixteen leading columns a collision to be dissolved, including pairs
+ * that the column was drawing in full and that any reader could tell apart by reading them - so
+ * "History of the JVM" was reduced to "…JVM" beside "…Java language", and a run of threads differing
+ * only in their closing word came out as "…21" repeated sixteen times behind an occurrence marker. An
+ * audit of the running application found those rows using 197px of a 197px box: nothing was being
+ * clipped, and the elision had bought nothing and spent the topic.
+ *
+ * <p>Eliding is therefore triggered by what the column cannot show rather than by what a reader might
+ * not scan, and the {@link #GLANCE} is demoted to what it can honestly be - the place a cut aims to
+ * put the difference, when a cut has to be made at all.
  *
  * <h2>Boundary</h2>
  *
@@ -63,28 +78,54 @@ final class ConversationTitles {
     static final int MAX_TITLE = 120;
 
     /**
+     * Columns of a row the column is certain to draw, whatever the glyphs turn out to be.
+     *
+     * <p>This is the width two labels have to differ inside, and it is the whole of what
+     * {@link #forColumn} guarantees. Past it a label is at the mercy of the browser's own ellipsis:
+     * the title box is 231px of a 13px system stack, and a wide label was measured starting to clip
+     * somewhere between twenty-nine and thirty-five characters depending on the glyphs in it. Inside
+     * twenty-nine, every label measured was drawn whole.
+     *
+     * <p>So a difference that falls inside this many columns is a difference the reader is looking
+     * at, and one that falls outside it may not have been rendered at all - which is the failure this
+     * class exists to prevent, and the only one it should be spending a topic to prevent. The floor
+     * of the measured range is taken rather than its middle: the cost of being one column too
+     * cautious is a cut that was not needed, and the cost of being one column too bold is a row whose
+     * only distinguishing mark was clipped away.
+     */
+    static final int DRAWN = 29;
+
+    /**
      * Columns of a label a reader takes in while scanning a column, rather than reading it.
      *
-     * <p>This is the width the distinguishing part of a label has to fall inside, and it is the whole
-     * of what {@link #forColumn} guarantees. Twenty rows that differ at character thirty are twenty
-     * rows nobody can tell apart: the browser's own ellipsis lands before the difference on a wide
-     * glyph run, and where it does not, the eye still stops at the left edge of the column and never
-     * reaches the right one.
+     * <p>Where a cut <em>aims</em> to leave the difference, not the rule for whether to cut. Sixteen
+     * is the leading 97px of the 231px box - a little over a third of the row - and a difference that
+     * lands inside it is found by the eye moving down the column rather than across it.
      *
-     * <p>Sixteen, from the same measurement the column's width comes from: the title box is 231px of
-     * a 13px system stack and fits 38 latin characters, so sixteen columns is its leading 97px - a
-     * little over a third of the row, and comfortably inside the 29-to-35 characters at which CSS
-     * starts clipping a wide label. A difference inside sixteen columns therefore survives both
-     * truncations, this one and the browser's.
-     *
-     * <p>Twenty-four was rejected: at two thirds of the row it is a width the reader has to read
-     * rather than scan, and the set that produced this rule shared twenty-nine characters, so a
-     * budget that close to the column lets the next such set straight through. Four to eight was
-     * rejected in the other direction: it would elide "Vaadin session locking" and "Vaadin routing"
-     * down to "…session locking" and "…routing", spending a topic to solve a collision that was not
-     * happening.
+     * <p>It is an aim and not a requirement because insisting on it is what produced labels of eight
+     * and nine characters: two threads whose only difference is their closing word cannot put that
+     * word in the leading third without throwing the rest of the name away. Where the aim and
+     * {@link #KEEP} disagree, {@link #KEEP} wins and the difference sits further right - still inside
+     * {@link #DRAWN}, which is the part that is not negotiable.
      */
     static final int GLANCE = 16;
+
+    /**
+     * Columns of the title a label keeps, however far right the difference turns out to be.
+     *
+     * <p>A label is a name before it is a discriminator. "…21" is unique, fits, and names nothing;
+     * sixteen rows of it behind an occurrence marker was the reported defect. Twelve columns is about
+     * two ordinary words, which is the least that can carry a subject at all, and it is the floor a
+     * cut is not allowed to go under while any earlier cut would still show the difference.
+     *
+     * <p>Half a bound, and worth saying which half. It is measured against the <em>longest</em> title
+     * in a cluster, because measuring it against the shortest would demand labels that cannot exist
+     * on a narrow column - and the longest says nothing about what a short title beside it has left,
+     * which is how "…21" survived a first fix and was photographed a second time. The other half of
+     * the bound is {@link #wordBeforeTheDifference}, which is about words rather than columns and
+     * does not depend on the lengths in the cluster at all.
+     */
+    private static final int KEEP = 12;
 
     /** Longer than this and the tail cannot affect the title, so the patterns never see it. */
     private static final int MAX_SOURCE = 400;
@@ -207,48 +248,48 @@ final class ConversationTitles {
     }
 
     /**
-     * Labels for the rows a column is about to paint, no two of them alike where they are read.
+     * Labels for the rows a column is about to paint, no two of them alike where they are drawn.
      *
      * <h2>The rule</h2>
      *
-     * <p>No two returned labels agree over their first {@link #GLANCE} display columns. Not "no two
-     * are equal": a set can be pairwise unequal and still render as twenty identical rows, which is
-     * exactly the defect this replaced. Distinctness at the glance is the strictly stronger property,
-     * and it is also monotone - labels that differ within sixteen columns differ at every width wider
-     * than sixteen, so the guarantee holds however the browser's own ellipsis lands on top of the
-     * character budget.
+     * <p>No two returned labels agree over their first {@link #DRAWN} display columns. Not "no two
+     * are equal": a set can be pairwise unequal and still render as twenty identical rows, because
+     * the browser clips what does not fit and the clipped part is where the difference was. Equality
+     * of the drawn part is the property the reader actually has.
+     *
+     * <p>It is also monotone in the right direction - labels that differ within twenty-nine columns
+     * differ at every width wider than twenty-nine - so the guarantee survives whatever the browser's
+     * own ellipsis does on top of the character budget used here.
      *
      * <h2>How it is reached</h2>
      *
-     * <p>Rows whose labels agree over the glance are gathered and shown what they do not share, in
-     * this order, escalating only as far as each cluster forces:
+     * <p>Rows whose labels are identical over the drawn part are gathered and shown what they do not
+     * share, escalating only as far as each cluster forces:
      *
      * <ol>
-     *   <li>The shared opening is elided at a <em>word</em> boundary, so what remains is readable
-     *       words rather than the tail of one. This is the good case and the common one.</li>
-     *   <li>Where whole words are no help - one long unbroken token differing in its last digits,
-     *       which is what a pasted id or build number looks like - the cut is made at the character
-     *       where the titles actually diverge. Mid-word, deliberately: a mid-word cut is a poor label
-     *       and an unreadable column is not a label at all.</li>
+     *   <li>The shared opening is elided, at a <em>word</em> boundary wherever one is available, so
+     *       what remains is readable words rather than the tail of one. Where the only whitespace is
+     *       outside the difference - one long unbroken token differing in its last digits, which is
+     *       what a pasted id or build number looks like - the cut falls between characters instead.
+     *       See {@link #elisionCut} for how far the cut goes, which is the whole of the judgement
+     *       here.</li>
      *   <li>Threads identical to their last character have nothing to expose, and take a leading
      *       occurrence marker. It claims nothing about the conversation, which is the honest thing to
      *       say about two threads that really did open with the same words.</li>
      * </ol>
      *
      * <p>The marker goes in front rather than behind. The column ellipsises with CSS at whatever
-     * width the glyphs happen to need, on top of the character count used here - measured, at 231px a
-     * 35-character label is already being clipped - and a trailing marker is the first thing that
-     * clipping removes. A marker that can be truncated away is a decoration that usually works.
+     * width the glyphs happen to need, on top of the character count used here, and a trailing marker
+     * is the first thing that clipping removes. A marker that can be truncated away is a decoration
+     * that usually works.
      *
      * <h2>What this gives up</h2>
      *
-     * <p>Twenty threads that really do share their first twenty-nine characters come out as "…1"
-     * through "…20": the shared subject is gone from the column and only the ordinal remains. That is
-     * the intended trade, not a shortfall. The shared part is by definition the part that told the
-     * reader nothing, the row's {@code title} attribute still carries the whole of it, and the
-     * alternative - keeping the subject and appending the ordinal - is the shape that was reported as
-     * unusable. Showing the shared subject once, on the group heading, would be better still, but
-     * that is the sidebar's layout to change and not this class's to decide.
+     * <p>Two threads whose difference is their closing word, past the drawn part of the column, come
+     * back with their opening elided: the reader loses the front of a name they could not read
+     * anyway, and keeps at least {@link #KEEP} columns of the rest. What is not given up any more is
+     * the name of a thread the column was drawing in full - a set that fits is left exactly as it is,
+     * because a difference that is on screen needs no help to be seen.
      *
      * <h2>Bounds and ordering</h2>
      *
@@ -256,8 +297,8 @@ final class ConversationTitles {
      * between two renders of the same list. Every returned label fits {@code limit} in characters and
      * in display columns. The marker search is bounded by the number of rows and needs at most one
      * attempt more than there are labels already placed, because two different markers differ inside
-     * the glance - which holds up to a six-digit marker even at the floor of eight columns, and so up
-     * to more rows than a column could paint.
+     * the drawn part - which holds up to a six-digit marker even at the floor of eight columns, and so
+     * up to more rows than a column could paint.
      *
      * @param rows  the conversations in the order they will be drawn; null entries are skipped, and a
      *              row with a blank title is named rather than drawn empty
@@ -270,6 +311,9 @@ final class ConversationTitles {
             return new LinkedHashMap<>();
         }
         int width = Math.max(8, limit);
+        // Both budgets are capped by the column: on a column narrower than either of them, "what is
+        // certainly drawn" and "what is scanned" are the column itself.
+        int drawn = Math.min(DRAWN, width);
         int glance = Math.min(GLANCE, width);
 
         // Distinct ids only: the same conversation offered twice is one row's worth of naming, and
@@ -283,12 +327,11 @@ final class ConversationTitles {
             }
         }
 
-        // Clustering on the glance rather than on the whole truncated label is the fix. The old key
-        // was the full-width truncation, which let a set differing at character thirty of a
-        // thirty-eight character budget through untouched.
+        // Clustering on the drawn part of the truncated label. Narrower than this - the leading third
+        // of the row - gathered rows the column was showing in full and elided the name off them.
         Map<String, List<String>> clusters = new LinkedHashMap<>();
         sources.forEach((id, title) -> clusters
-                .computeIfAbsent(glanceKey(shorten(title, width), glance), key -> new ArrayList<>())
+                .computeIfAbsent(drawnKey(shorten(title, width), drawn), key -> new ArrayList<>())
                 .add(id));
 
         Map<String, String> separated = new LinkedHashMap<>();
@@ -296,7 +339,7 @@ final class ConversationTitles {
             List<String> titles = ids.stream().map(sources::get).toList();
             List<String> labels = ids.size() == 1
                     ? List.of(shorten(titles.getFirst(), width))
-                    : separate(titles, width, glance);
+                    : separate(titles, width, drawn, glance);
             for (int index = 0; index < ids.size(); index++) {
                 separated.put(ids.get(index), labels.get(index));
             }
@@ -311,7 +354,7 @@ final class ConversationTitles {
         // separates a cluster, but it cannot separate two threads identical to their last character,
         // and nothing stops an elided label from landing on one some other cluster already took.
         // This sweep is what makes the guarantee true by construction instead of by argument.
-        return markRemainingCollisions(ordered, width, glance);
+        return markRemainingCollisions(ordered, width, drawn);
     }
 
     /**
@@ -329,84 +372,220 @@ final class ConversationTitles {
     }
 
     /**
-     * Shows a colliding cluster what it does not share, by whichever cut is the least destructive.
+     * Shows a colliding cluster what it does not share, by the least destructive cut that works.
      *
-     * <p>Word-boundary elision is preferred because what it leaves is readable; the character-level
-     * cut is taken only when the word-level one leaves the cluster still unreadable, and is abandoned
-     * in turn when it cannot separate the cluster either - which happens exactly when the titles are
-     * identical, and is what the occurrence marker is for.
+     * <p>The elided labels are only accepted if they separate everything that <em>can</em> be
+     * separated - that is, if they leave as many distinct rows as there are distinct titles. The
+     * comparison is against the distinct titles rather than against the row count on purpose: a
+     * cluster containing seventeen copies of one thread and one other can never be reduced to
+     * eighteen distinct labels by cutting, and judging the cut on that would throw away a good
+     * elision because of a duplicate the occurrence marker was always going to handle.
      *
-     * @param titles the full topics of the rows that read alike at a glance, in row order
+     * @param titles the full topics of the rows the column draws alike, in row order
      * @param width  characters the column can show
-     * @param glance columns a reader takes in
+     * @param drawn  columns the column is certain to draw
+     * @param glance columns a reader takes in at once
      * @return one label per title, in the same order; possibly still colliding, for the caller's
      *         final sweep to resolve
      */
-    private static List<String> separate(List<String> titles, int width, int glance) {
-        List<String> byWord = elide(titles, width);
-        if (!collides(byWord, glance)) {
-            return byWord;
-        }
-        List<String> byCharacter = elideAtDivergence(titles, width);
-        return collides(byCharacter, glance) ? byWord : byCharacter;
-    }
-
-    /**
-     * Whether any two of these labels still read the same.
-     *
-     * @param labels labels being considered for the same column
-     * @param glance columns a reader takes in
-     * @return true when at least two of them agree over the glance
-     */
-    private static boolean collides(List<String> labels, int glance) {
-        return labels.stream().map(label -> glanceKey(label, glance)).distinct().count() < labels.size();
-    }
-
-    /**
-     * Shows a colliding cluster what it does not share, when there is anything it does not share.
-     *
-     * @param titles the full topics of the rows that read alike at a glance
-     * @param width  characters the column can show
-     * @return one label per title, in the same order; possibly still containing duplicates
-     */
-    private static List<String> elide(List<String> titles, int width) {
-        String shared = sharedOpening(titles);
-        if (shared.isEmpty()) {
-            return titles.stream().map(title -> shorten(title, width)).toList();
+    private static List<String> separate(List<String> titles, int width, int drawn, int glance) {
+        List<String> plain = titles.stream().map(title -> shorten(title, width)).toList();
+        int cut = elisionCut(titles, drawn, glance);
+        if (cut <= 0) {
+            return plain;
         }
         // The ellipsis is load-bearing: it says the row is named after part of a longer topic,
         // rather than claiming the remainder is the whole of it.
-        return titles.stream()
-                .map(title -> title.length() > shared.length()
-                        ? shorten("…" + title.substring(shared.length()).strip(), width)
-                        : shorten(title, width))
+        List<String> elided = titles.stream()
+                .map(title -> shorten("…" + title.substring(cut), width))
                 .toList();
+        long separable = titles.stream().distinct().count();
+        long separated = elided.stream().map(label -> drawnKey(label, drawn)).distinct().count();
+        return separated < separable ? plain : elided;
     }
 
     /**
-     * Cuts where the titles actually part company, when no word boundary will do it.
+     * How much of the shared opening to take off, or zero to leave these titles alone.
      *
-     * <p>The case this exists for is one long token - "build-000000000000001" against
-     * "build-000000000000002" - where the only whitespace is outside the difference, so eliding whole
-     * words either removes nothing or removes everything. Cutting at the divergence puts the digit
-     * that differs at the front of the row, which is the whole of the information the reader has.
+     * <p>This is where the judgement in this class lives, so the three bounds are named rather than
+     * folded together. Let {@code d} be the character at which the titles part company.
      *
-     * <p>The cut is snapped back to a character boundary first. Splitting a surrogate pair leaves half
-     * of an emoji, which the browser draws as a replacement box, and cutting between a letter and its
-     * combining accent orphans the accent onto the ellipsis.
+     * <ul>
+     *   <li><b>The floor.</b> The cut must be deep enough that {@code d} lands inside the
+     *       {@code drawn} part of the resulting label. Below this floor the elision buys nothing:
+     *       the difference is still off the end of the row, which is the state the reader complained
+     *       about. It is the only bound here that is not negotiable, and it is now the only thing in
+     *       the floor - see below.</li>
+     *   <li><b>The aim.</b> Deeper still, so that {@code d} lands inside the {@code glance} - the
+     *       leading third of the row, where the eye moving down a column finds it.</li>
+     *   <li><b>The ceiling.</b> Not so deep that the label stops naming anything. Two bounds, and
+     *       the tighter one wins: fewer than {@link #KEEP} columns of the longest title may not
+     *       survive, and the cut may not land on the word the titles part company in, so at least
+     *       one whole word of subject stands in front of the difference.</li>
+     * </ul>
      *
-     * @param titles the full topics that read alike at a glance
-     * @param width  characters the column can show
-     * @return one label per title in the same order, or the merely shortened titles when there is no
-     *         divergence to cut at - which is the case when they are identical, or when one is a
-     *         prefix of another and would be cut away entirely
+     * <h2>What the last two rounds of this defect were</h2>
+     *
+     * <p>The word bound is the second half of the fix and the half that was missing. The character
+     * count alone is measured against the <em>longest</em> title in the cluster, which says nothing
+     * about what the short ones have left: a cluster holding one long topic and sixteen short ones
+     * was cut by the long one's budget, and the sixteen came back as the two digits they differ in.
+     * The count cannot be moved to the shortest title without demanding labels that cannot exist on
+     * a narrow column, so what is bounded instead is the thing the reader actually loses - the last
+     * word of the name.
+     *
+     * <p>The floor used to carry a second term as well: cut deep enough that the longest label fits
+     * {@code width} exactly. That term is gone. It was never about the reader - {@link #shorten}
+     * fits every label to the column afterwards regardless, and the difference is already guaranteed
+     * inside {@code drawn} by the term that remains - and on a cluster with one long topic in it, it
+     * was the term that pushed the cut past the last space in the shared opening. Its only cost is
+     * that a long row may now be ellipsised at both ends, which is what a long row looks like.
+     *
+     * <p>Both ceilings are floored by the floor rather than allowed to overrule it. On a column too
+     * narrow to keep a word at all - eight columns, where the whole label is the difference and two
+     * characters of context - there is no cut that satisfies both, and showing the difference is
+     * worth more than a word that would not fit beside it.
+     *
+     * <p>Where the aim and the ceiling disagree the ceiling wins, and the difference sits further
+     * right - still drawn, which is the part that is not negotiable. The cut is then moved to a word
+     * boundary: forward first, so no text is lost that the bounds did not already require, and
+     * backward second, because a cut that keeps a whole word is worth a few columns more of shared
+     * opening. Only when neither exists does the cut fall between characters, which is what one long
+     * unbroken token leaves to work with.
+     *
+     * @param titles the full topics of the rows the column draws alike; at least two, not identical
+     *               in every case
+     * @param drawn  columns the column is certain to draw
+     * @param glance columns a reader takes in at once
+     * @return an index into the shared opening of every title, or 0 when no cut helps - because the
+     *         titles are identical, because one is a prefix of another and would be cut away
+     *         entirely, or because no cut can both show the difference and leave a name around it
      */
-    private static List<String> elideAtDivergence(List<String> titles, int width) {
-        int shared = sharedPrefix(titles);
-        if (shared == 0 || titles.stream().anyMatch(title -> title.length() <= shared)) {
-            return titles.stream().map(title -> shorten(title, width)).toList();
+    private static int elisionCut(List<String> titles, int drawn, int glance) {
+        int divergence = sharedPrefix(titles);
+        int shortest = titles.stream().mapToInt(String::length).min().orElse(0);
+        int longest = titles.stream().mapToInt(String::length).max().orElse(0);
+        if (divergence == 0 || divergence >= shortest) {
+            return 0;
         }
-        return titles.stream().map(title -> shorten("…" + title.substring(shared), width)).toList();
+        // Every title agrees with the first one up to the divergence, so the word boundaries of the
+        // first are the word boundaries of all of them at any index the bounds permit.
+        String shared = titles.getFirst();
+
+        int floor = Math.max(0, divergence + 2 - drawn);
+        if (floor > divergence) {
+            return 0;
+        }
+        int subject = Math.min(longest - KEEP, wordBeforeTheDifference(shared, divergence));
+        int ceiling = graphemeFloor(shared, Math.min(divergence, Math.max(floor, subject)));
+        if (ceiling < floor) {
+            return 0;
+        }
+        int aim = Math.min(ceiling, Math.max(floor, divergence + 2 - glance));
+
+        int cut = firstWordStart(shared, aim, ceiling);
+        if (cut < 0) {
+            cut = lastWordStart(shared, floor, aim);
+        }
+        if (cut < 0) {
+            cut = Math.min(graphemeCeiling(shared, aim), ceiling);
+        }
+        return cut <= 0 || cut > ceiling ? 0 : cut;
+    }
+
+    /**
+     * The deepest cut that still leaves a whole word standing in front of what differs.
+     *
+     * <p>This is the bound that separates a name from a discriminator. A label elided to exactly the
+     * point the titles part company is the difference and nothing else - "…21" beside "…25" - which
+     * is unique, fits, and tells the reader nothing about which conversation the row opens. Cutting
+     * one word earlier costs a few columns of an opening every row in the cluster shares, and buys
+     * back the only part of the label that says what the thread is about.
+     *
+     * <p>It is a bound on the cut and not a promise about the result: how much of a name one word
+     * carries depends on the name, and the caller floors this against the width the difference has
+     * to be drawn inside. Where the shared opening has no word boundary in front of the difference -
+     * one unbroken token, which is what a pasted id or a build number looks like - there is no word
+     * to keep and the divergence itself is returned, leaving the caller's other bounds to decide.
+     *
+     * @param shared     any of the titles in the cluster, all of which agree up to {@code divergence}
+     * @param divergence the index at which the titles stop agreeing, inside {@code shared}
+     * @return an index at or before {@code divergence}, never negative
+     */
+    private static int wordBeforeTheDifference(String shared, int divergence) {
+        int differing = wordStartAt(shared, divergence);
+        int previous = lastWordStart(shared, 1, differing - 1);
+        return previous < 0 ? divergence : previous;
+    }
+
+    /**
+     * Where the word containing {@code index} begins.
+     *
+     * <p>Walks back rather than forward, because the question being asked is which word the reader
+     * would see broken by a cut here - and a cut inside a word breaks the word that started before
+     * it. An index sitting on whitespace answers with the word in front of that whitespace, which is
+     * the conservative reading: it treats the space as belonging to the word it follows, and so
+     * never reports a later start than the truth.
+     *
+     * @param text  the string being cut
+     * @param index a position inside it, never negative and never past the end
+     * @return the index the word begins at, or 0 when nothing before it begins a word
+     */
+    private static int wordStartAt(String text, int index) {
+        for (int at = Math.min(index, text.length() - 1); at >= 1; at--) {
+            if (beginsAWord(text, at)) {
+                return at;
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * The first index in {@code [from, to]} at which a word begins.
+     *
+     * @param text the shared opening being cut
+     * @param from lowest index to consider, never negative
+     * @param to   highest index to consider, which may be below {@code from}
+     * @return the index, or -1 when no word begins in that range
+     */
+    private static int firstWordStart(String text, int from, int to) {
+        for (int index = Math.max(1, from); index <= to && index < text.length(); index++) {
+            if (beginsAWord(text, index)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The last index in {@code [from, to]} at which a word begins.
+     *
+     * @param text the shared opening being cut
+     * @param from lowest index to consider, never negative
+     * @param to   highest index to consider
+     * @return the index, or -1 when no word begins in that range
+     */
+    private static int lastWordStart(String text, int from, int to) {
+        for (int index = Math.min(to, text.length() - 1); index >= Math.max(1, from); index--) {
+            if (beginsAWord(text, index)) {
+                return index;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Whether a word starts at {@code index}: the character before it is a space and it is not.
+     *
+     * <p>Cutting here is what keeps a label from opening mid-word, and cutting on the space itself
+     * would leave the label starting "… word" with a gap the ellipsis already implies.
+     *
+     * @param text  the shared opening being cut
+     * @param index a position inside it, at least one
+     * @return true when a word begins exactly there
+     */
+    private static boolean beginsAWord(String text, int index) {
+        return text.charAt(index - 1) == ' ' && text.charAt(index) != ' ';
     }
 
     /**
@@ -452,19 +631,47 @@ final class ConversationTitles {
     }
 
     /**
-     * The leading columns of a label: what is on screen before the eye moves to the next row.
+     * The character boundary at or after {@code index}, for a cut that may not be made any earlier.
      *
-     * <p>Two labels with the same key are two rows the reader cannot separate, whatever they do
-     * further right. Keys are compared exactly, including case: two labels differing only in case are
-     * left alone rather than elided, because collapsing them would spend a topic to solve a collision
-     * that is not one.
+     * <p>The counterpart of {@link #graphemeFloor}, and needed because an elision has a floor of its
+     * own: cutting one {@code char} short of what the bounds require would put the difference back
+     * outside the drawn part of the row, which is the whole point of cutting. Rounding up costs at
+     * most one character of an already-shared opening.
      *
-     * @param label  a label the column would draw
-     * @param glance columns a reader takes in
+     * @param text  the string being cut
+     * @param index a {@code char} offset into it, which may sit inside a surrogate pair
+     * @return a safe offset, never before {@code index} and never past the end of the text
+     */
+    private static int graphemeCeiling(String text, int index) {
+        if (index <= 0) {
+            return 0;
+        }
+        if (index >= text.length()) {
+            return text.length();
+        }
+        BreakIterator characters = BreakIterator.getCharacterInstance(Locale.ROOT);
+        characters.setText(text);
+        if (characters.isBoundary(index)) {
+            return index;
+        }
+        int next = characters.following(index);
+        return next == BreakIterator.DONE ? text.length() : next;
+    }
+
+    /**
+     * The part of a label the column is certain to draw.
+     *
+     * <p>Two labels with the same key are two rows the reader cannot separate, because whatever
+     * distinguishes them lies past the point the browser starts clipping. Keys are compared exactly,
+     * including case: two labels differing only in case are left alone rather than elided, because
+     * collapsing them would spend a topic to solve a collision that is not one.
+     *
+     * @param label a label the column would draw
+     * @param drawn columns the column is certain to draw
      * @return the label's leading columns, or the whole label when it is shorter than that
      */
-    private static String glanceKey(String label, int glance) {
-        return label.substring(0, cutIndex(label, glance));
+    private static String drawnKey(String label, int drawn) {
+        return label.substring(0, cutIndex(label, drawn));
     }
 
     /**
@@ -476,11 +683,11 @@ final class ConversationTitles {
      *
      * @param labels id to label, in the order the column draws them
      * @param width  characters the column can show
-     * @param glance columns a reader takes in
+     * @param drawn  columns the column is certain to draw
      * @return the same ids in the same order, with markers where they were needed
      */
     private static Map<String, String> markRemainingCollisions(
-            Map<String, String> labels, int width, int glance) {
+            Map<String, String> labels, int width, int drawn) {
         Set<String> taken = new HashSet<>();
         Map<String, String> resolved = new LinkedHashMap<>();
         // Each attempt puts a different marker at the front, so each produces a different key; with
@@ -489,49 +696,14 @@ final class ConversationTitles {
         labels.forEach((id, label) -> {
             String candidate = label;
             for (int occurrence = 2;
-                 occurrence <= attempts && taken.contains(glanceKey(candidate, glance));
+                 occurrence <= attempts && taken.contains(drawnKey(candidate, drawn));
                  occurrence++) {
                 candidate = shorten("(" + occurrence + ") " + label, width);
             }
-            taken.add(glanceKey(candidate, glance));
+            taken.add(drawnKey(candidate, drawn));
             resolved.put(id, candidate);
         });
         return resolved;
-    }
-
-    /**
-     * The longest run of whole words every one of these titles begins with.
-     *
-     * <p>Whole words, because eliding mid-word turns "…ual threads" into a typo. Empty unless the run
-     * is at least two words long and every title has at least one word left after it - a one-word
-     * elision saves nothing, and eliding everything leaves a row with no name at all.
-     *
-     * <p>Also empty when the titles are identical. Eliding what they share then leaves only the last
-     * word of a sentence they both end with, which is how two conversations about fifteen Java
-     * features came to be labelled "…21" and "…21 (2)": distinct, fitting, and no use to anybody.
-     * Threads that are the same to their last character have nothing to expose, and are separated by
-     * the occurrence marker instead.
-     */
-    private static String sharedOpening(List<String> titles) {
-        if (titles.size() < 2 || titles.stream().distinct().count() < 2) {
-            return "";
-        }
-        List<String[]> words = titles.stream().map(title -> title.split(" ")).toList();
-        int shortest = words.stream().mapToInt(parts -> parts.length).min().orElse(0);
-
-        int common = 0;
-        while (common < shortest - 1) {
-            int position = common;
-            String candidate = words.getFirst()[position];
-            if (!words.stream().allMatch(parts -> parts[position].equals(candidate))) {
-                break;
-            }
-            common++;
-        }
-        if (common < 2) {
-            return "";
-        }
-        return String.join(" ", List.of(words.getFirst()).subList(0, common)) + " ";
     }
 
     /**

@@ -298,6 +298,157 @@ class MarkdownTest {
         assertThat(onlyChild(wrapper).getTag()).isEqualTo("table");
     }
 
+    // ------------------------------------------------------------------ GFM
+
+    /**
+     * The one inline construct in this grammar whose absence inverts a sentence.
+     *
+     * <p>Emphasis that fails to render costs a reader some typography. A retraction that fails to
+     * render costs them the meaning: "~~Implicit locking of all fields~~" is the model saying that
+     * is <em>not</em> how it works, and printed as its own tildes it reads as the affirmative claim
+     * with punctuation round it. The stylesheet has painted {@code .jc-prose del} the whole time;
+     * nothing ever produced one.
+     *
+     * <p>Fails on the original: {@code inline} dispatched on backslashes, backticks, {@code *},
+     * {@code _}, {@code [} and the maths delimiters, and on nothing else, so the tildes fell
+     * through to the plain-text buffer.
+     */
+    @Test
+    @DisplayName("a struck-through run is struck through, not printed as its tildes")
+    void rendersStrikethrough() {
+        List<Element> blocks = Markdown.render("A ~~short~~ long paragraph.");
+
+        assertThat(deepTags(blocks)).contains("del");
+        assertThat(text(blocks)).isEqualTo("A short long paragraph.");
+    }
+
+    @Test
+    @DisplayName("a lone tilde is a tilde, and an escaped pair is the characters themselves")
+    void leavesUnpairedTildesAlone() {
+        assertThat(text(Markdown.render("Roughly ~5 seconds"))).isEqualTo("Roughly ~5 seconds");
+        assertThat(deepTags(Markdown.render("Roughly ~5 seconds"))).doesNotContain("del");
+        // An opener with no closer is the characters it is, exactly as an unmatched ** is.
+        assertThat(text(Markdown.render("A ~~stray opener"))).isEqualTo("A ~~stray opener");
+        assertThat(text(Markdown.render("Literal \\~~text\\~~"))).isEqualTo("Literal ~~text~~");
+        // Inside a code span the tildes are somebody's shell command, not markup.
+        assertThat(text(Markdown.render("Run `rm ~~/tmp`"))).isEqualTo("Run rm ~~/tmp");
+        assertThat(deepTags(Markdown.render("Run `rm ~~/tmp`"))).doesNotContain("del");
+    }
+
+    /**
+     * A checklist is the shape an agent answers a "what is left to do" question in, and the boxes
+     * are the answer: whether an item is done is carried by {@code [x]} against {@code [ ]} and by
+     * nothing else in the line. Printed as literal brackets it is a list of items in an unknown
+     * state, and the difference between done and not done is two spaces of punctuation.
+     *
+     * <p>Fails on the original: the bullet path rendered the item's text as it stood, so the DOM
+     * held no {@code input} at all and the reader read "[x] done".
+     */
+    @Test
+    @DisplayName("a task list draws its boxes, in the state the answer put them in")
+    void rendersTaskLists() {
+        List<Element> blocks = Markdown.render("- [x] done\n- [ ] todo\n");
+
+        List<Element> boxes = descendants(blocks).filter(node -> "input".equals(tagOf(node))).toList();
+        assertThat(boxes).hasSize(2);
+        assertThat(boxes.get(0).getAttribute("type")).isEqualTo("checkbox");
+        assertThat(boxes.get(0).hasAttribute("checked")).isTrue();
+        assertThat(boxes.get(1).hasAttribute("checked")).isFalse();
+        // A box the reader can tick would be an edit of the answer that nothing would record.
+        assertThat(boxes).allSatisfy(box -> assertThat(box.hasAttribute("disabled")).isTrue());
+        assertThat(text(blocks)).isEqualTo("donetodo");
+    }
+
+    @Test
+    @DisplayName("a bracket that is not a task box stays the text it was")
+    void leavesOrdinaryBracketsInItemsAlone() {
+        assertThat(text(Markdown.render("- [note] see below\n")))
+                .isEqualTo("[note] see below");
+        assertThat(deepTags(Markdown.render("- [note] see below\n"))).doesNotContain("input");
+        // An ordered item is not a task list in GFM, and inventing one here would silently rewrite
+        // a numbered step whose text happens to open with a bracket.
+        assertThat(deepTags(Markdown.render("1. [x] done\n"))).doesNotContain("input");
+    }
+
+    /**
+     * A model writes most of its URLs bare, because in a chat window that is what a person does.
+     *
+     * <p>Fails on the original: only {@code [label](target)} produced an anchor, so an answer whose
+     * whole point was "read this" left the reader a string to select and copy by hand - and the
+     * stylesheet's link treatment never appeared on the one thing on screen that was a link.
+     */
+    @Test
+    @DisplayName("a bare URL becomes the link it plainly is")
+    void linksBareUrls() {
+        List<Element> blocks = Markdown.render("Read https://example.com/docs for more.");
+
+        Element anchor = anchor(blocks);
+        assertThat(anchor.getAttribute("href")).isEqualTo("https://example.com/docs");
+        assertThat(anchor.getAttribute("rel")).contains("noopener");
+        assertThat(anchor.getTextRecursively()).isEqualTo("https://example.com/docs");
+        // Nothing is added to or taken from what the model wrote.
+        assertThat(text(blocks)).isEqualTo("Read https://example.com/docs for more.");
+    }
+
+    @Test
+    @DisplayName("the sentence's own punctuation stays outside the link")
+    void keepsTrailingPunctuationOutOfABareUrl() {
+        assertThat(anchor(Markdown.render("See https://example.com.")).getAttribute("href"))
+                .isEqualTo("https://example.com");
+        assertThat(anchor(Markdown.render("See (https://example.com), then stop."))
+                .getAttribute("href")).isEqualTo("https://example.com");
+        // A closing bracket the URL itself opened belongs to the URL.
+        assertThat(anchor(Markdown.render("See https://example.com/a_(b) now")).getAttribute("href"))
+                .isEqualTo("https://example.com/a_(b)");
+    }
+
+    @Test
+    @DisplayName("only the schemes an explicit link may carry are autolinked at all")
+    void allowListsBareUrlSchemes() {
+        // The same allow-list the bracket form is held to, applied to the form that has no brackets.
+        assertThat(deepTags(Markdown.render("Try javascript:alert(1) now"))).doesNotContain("a");
+        assertThat(deepTags(Markdown.render("Try data:text/html,<b>x</b> now"))).doesNotContain("a");
+        assertThat(deepTags(Markdown.render("Try file:///etc/passwd now"))).doesNotContain("a");
+        assertThat(text(Markdown.render("Try javascript:alert(1) now")))
+                .isEqualTo("Try javascript:alert(1) now");
+    }
+
+    @Test
+    @DisplayName("a URL inside a code span or a link label does not become a second link")
+    void leavesUrlsThatAreAlreadySpokenFor() {
+        assertThat(deepTags(Markdown.render("Call `curl https://example.com` first")))
+                .doesNotContain("a");
+        // An anchor inside an anchor is not markup a browser can make sense of, and the label is
+        // already inside the link the model wrote.
+        List<Element> nested = Markdown.render("[docs at https://example.com](https://example.org)");
+        assertThat(deepTags(nested).stream().filter("a"::equals).toList()).hasSize(1);
+        assertThat(anchor(nested).getAttribute("href")).isEqualTo("https://example.org");
+    }
+
+    /** The one anchor in a rendered answer. */
+    private static Element anchor(List<Element> blocks) {
+        return descendants(blocks)
+                .filter(node -> "a".equals(tagOf(node)))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("nothing in this answer became a link"));
+    }
+
+    /** Every tag in the tree, however deep, which is where the inline constructs live. */
+    private static List<String> deepTags(List<Element> blocks) {
+        return descendants(blocks).map(MarkdownTest::tagOf).toList();
+    }
+
+    private static java.util.stream.Stream<Element> descendants(List<Element> blocks) {
+        List<Element> found = new java.util.ArrayList<>();
+        blocks.forEach(block -> collect(block, found));
+        return found.stream();
+    }
+
+    private static void collect(Element element, List<Element> into) {
+        into.add(element);
+        element.getChildren().forEach(child -> collect(child, into));
+    }
+
     /** The {@code <code>} inside a code figure, which is two levels down from the block. */
     private static Element codeOf(Element figure) {
         return child(child(figure, "pre"), "code");

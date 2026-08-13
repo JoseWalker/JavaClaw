@@ -4,8 +4,7 @@ import ai.javaclaw.agent.Agent;
 import ai.javaclaw.agent.ResponseListener;
 import com.vaadin.flow.component.AttachEvent;
 import com.vaadin.flow.component.Component;
-import com.vaadin.flow.component.Key;
-import com.vaadin.flow.component.KeyModifier;
+import com.vaadin.flow.component.DetachEvent;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
 import com.vaadin.flow.component.dialog.Dialog;
@@ -19,12 +18,14 @@ import com.vaadin.flow.data.value.ValueChangeMode;
 import com.vaadin.flow.dom.Element;
 import com.vaadin.flow.router.PageTitle;
 import com.vaadin.flow.router.Route;
+import com.vaadin.flow.router.RouteAlias;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Streaming chat view, mounted alongside the existing htmx UI rather than replacing it.
@@ -48,6 +49,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * from the store on every switch, and the next question is asked of whichever conversation is
  * currently bound, so the title above the messages and the messages themselves cannot disagree.
  *
+ * <h2>Two addresses, one view</h2>
+ *
+ * <p>The empty route is where a reader arrives with no conversation in mind, and
+ * {@link ConversationAddress#ROUTE} is where a particular conversation lives. Both resolve to this
+ * view rather than to two, because they are the same screen showing different content: the second is
+ * the first with the reader's place written down. Which conversation a navigation named is read by
+ * the shell, not here - see {@link MainLayout}, which owns the binding and hands it over through
+ * {@link ConversationHost} exactly as it does for a click on a row.
+ *
+ * <h2>What survives leaving the page</h2>
+ *
+ * <p>The address is half of it and the unsent draft is the other half. A reload rebuilds this view
+ * from nothing, so a half-written question that lived only in the composer's value went with the
+ * page - and switching conversations threw it away just as completely, several times an hour rather
+ * than once. Both are answered by {@link ComposerDrafts}, which keeps the text in the session for the
+ * conversation it was written for; the composer is filled from it on attach and on every switch, and
+ * emptied by sending, so a reload cannot hand a reader back a question they have already asked.
+ *
  * <h2>Which store</h2>
  *
  * <p>{@link ConversationTranscripts}, not the chat memory the agent reads. The two are different
@@ -59,6 +78,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * screen.
  */
 @Route(value = "", layout = MainLayout.class)
+@RouteAlias(value = ConversationAddress.ROUTE, layout = MainLayout.class)
 @PageTitle("JavaClaw")
 public class ChatView extends Div implements ConversationHost {
 
@@ -145,6 +165,48 @@ public class ChatView extends Div implements ConversationHost {
             "JavaClaw is still responding, so nothing was sent. Your message is kept - send it when "
                     + "the answer ends.";
 
+    /**
+     * Said under the composer while the browser has no connection.
+     *
+     * <p>Deliberately not "your message will be sent when the connection returns". Nothing here
+     * queues anything, for the same reason {@link #STILL_RESPONDING} refuses to: a message that
+     * leaves on its own, at a moment the reader did not choose, is the dishonesty this composer is
+     * built to avoid. What is true is that the draft is safe and that sending it stays theirs to do.
+     */
+    private static final String OFFLINE_HINT =
+            "Offline - JavaClaw cannot be reached. Your message is kept; send it when the connection "
+                    + "returns.";
+
+    /**
+     * When a keystroke in the composer is this view's to answer rather than the textarea's.
+     *
+     * <p>Three conditions and the field is broken without any of them. Enter, because that is the
+     * send key. Not Shift, because Shift + Enter is how a message spans several lines and that
+     * newline has to reach the textarea. Not while an input method is composing, because Enter is
+     * how a candidate is committed in every IME - swallowing it there would make the composer unable
+     * to accept text in most of the world's scripts.
+     */
+    private static final String COMPOSER_ENTER =
+            "event.key === 'Enter' && !event.shiftKey && !event.isComposing";
+
+    /**
+     * Stops the browser doing anything of its own with the keystroke this view has just answered.
+     *
+     * <p>This is the half of a refusal the server cannot perform. The default action of Enter in a
+     * textarea is to insert a newline, and it happens in the browser during the dispatch - so a
+     * refusal decided on the server arrives after the draft has already been edited. An audit
+     * measured exactly that: Enter mid-stream sent nothing, said so in a 1x1 off-screen region, and
+     * left a stray blank line in the reader's own text. The only visible consequence of the
+     * keystroke was the one thing that should not have happened.
+     *
+     * <p>The condition is repeated inside the expression rather than left to the registration's
+     * filter, so the guard travels with the call it guards. Whether Flow evaluates event data before
+     * or after the filter is then not something this file depends on - and Shift + Enter keeps its
+     * newline either way.
+     */
+    private static final String SWALLOW_COMPOSER_ENTER =
+            "(" + COMPOSER_ENTER + ") && event.preventDefault()";
+
     private final transient Agent agent;
     private final transient ExecutorService responseExecutor;
     private final transient ConversationTranscripts transcripts;
@@ -158,6 +220,17 @@ public class ChatView extends Div implements ConversationHost {
     private final Div composer = new Div();
     private final Div composerField = new Div();
     private final Span composerHint = new Span();
+
+    /**
+     * The line the composer shows instead of its hint while the browser has no connection.
+     *
+     * <p>A separate element rather than a different value in {@link #composerHint}, because the two
+     * are decided by different parties: the hint is whatever the server last had cause to say, and
+     * this is true exactly when the server cannot be asked. Writing one over the other would make
+     * the visible line depend on a round trip that, in this state, is the thing that does not
+     * happen.
+     */
+    private final Span composerOffline = new Span();
 
     /**
      * The one live region that is not the transcript.
@@ -201,6 +274,26 @@ public class ChatView extends Div implements ConversationHost {
      * the transcript, so a token that was already in flight cannot reopen a closed turn.
      */
     private transient AtomicBoolean activeTurn;
+
+    /**
+     * Guards the one writing-down of the streaming turn's answer.
+     *
+     * <p>Three parties race for it - the completion as the UI thread sees it, the same completion as
+     * the worker that produced it sees it, and the reader stopping or leaving - and the flag is what
+     * makes the transcript hold one copy of the answer rather than three. See {@link #fileAnswer}.
+     */
+    private transient AtomicBoolean activeFiled;
+
+    /**
+     * Where the store's handle on the streaming turn's answer is left, for whoever files second.
+     *
+     * <p>The worker can write the answer down but cannot hand the turn on screen its identity, which
+     * is what makes an answer re-askable. So it leaves the record here and the UI thread picks it up
+     * when it arrives - or does not, on a page that has gone away, where there is no turn on screen
+     * for an identity to mean anything to.
+     */
+    private transient AtomicReference<TranscriptTurn> activeRecord;
+
     private transient Future<?> activeResponse;
     private transient MessageTurn activeAnswer;
 
@@ -266,6 +359,14 @@ public class ChatView extends Div implements ConversationHost {
         transcript.addClassName("jc-transcript");
         // Announced as a log so a screen reader reads streamed tokens without stealing focus.
         transcript.getElement().setAttribute("role", "log");
+        // Written out although role="log" already implies it, and deliberately kept when a review
+        // asked for its removal. Removing it is not a fix for anything: ARIA gives role="log" an
+        // implicit aria-live of "polite", so a conforming screen reader behaves identically with the
+        // attribute absent, and the only implementations the line can still help are the ones that
+        // do not resolve implicit live values from the role. What actually governs how much of a
+        // streamed answer is read out is aria-busy - see markTranscriptBusy, which mutes the region
+        // for the whole of a turn and for the whole of a load - and how much churn the answer makes
+        // on its way in, which is MessageTurn's showTail.
         transcript.getElement().setAttribute("aria-live", "polite");
         // A live region with no name is a region nobody can choose to jump to, because there is
         // nothing in the landmark list to choose.
@@ -400,18 +501,22 @@ public class ChatView extends Div implements ConversationHost {
         // submit whatever was in it one blur ago - in practice, nothing at all. It is also what
         // keeps the send button's enabled state in step with the field.
         prompt.setValueChangeMode(ValueChangeMode.EAGER);
-        prompt.addValueChangeListener(event -> updateSendEnabled());
-        prompt.addKeyDownListener(Key.ENTER, event -> {
-            // Shift + Enter has to reach the textarea so a message can span several lines.
-            if (event.getModifiers().contains(KeyModifier.SHIFT)) {
-                return;
-            }
-            if (streaming) {
-                refuseSendWhileStreaming();
-                return;
-            }
-            submit();
+        prompt.addValueChangeListener(event -> {
+            updateSendEnabled();
+            // Filed on every change rather than on blur or on a timer, because the events this has
+            // to survive - a reload, a crashed tab, a click on another row - give no warning and
+            // leave nothing to flush. The value is already on the server for the send button's sake,
+            // so this costs one map write on top of an exchange that was happening anyway.
+            rememberDraft();
         });
+        // Registered on the element rather than as a key listener on the component, and the
+        // difference is the whole of what a reader gets out of it: a DOM registration can carry an
+        // expression the browser evaluates, which is the only place the keystroke's default can be
+        // stopped. A component-level listener hears the key and cannot prevent anything, so the
+        // newline had already been inserted into the draft by the time the refusal was decided.
+        prompt.getElement().addEventListener("keydown", event -> onComposerEnter())
+                .setFilter(COMPOSER_ENTER)
+                .addEventData(SWALLOW_COMPOSER_ENTER);
 
         send.addClassName("jc-send");
         send.setDisableOnClick(false);
@@ -431,6 +536,13 @@ public class ChatView extends Div implements ConversationHost {
 
         composerHint.addClassName("jc-composer__hint");
 
+        // Drawn once and shown by the stylesheet, because the state it describes is the one state in
+        // which the server cannot draw anything: by the time it is true, nothing this side of the
+        // browser can be reached. It replaces the hint rather than joining it - see the sheet - so
+        // the line that normally advertises Enter stops advertising a key that will not work.
+        composerOffline.setText(OFFLINE_HINT);
+        composerOffline.addClassName("jc-composer__offline");
+
         announcer.addClassNames("jc-sr-only", "jc-announcer");
         announcer.getElement().setAttribute("role", "status");
         announcer.getElement().setAttribute("aria-live", "polite");
@@ -438,7 +550,7 @@ public class ChatView extends Div implements ConversationHost {
         // that only mean anything read together.
         announcer.getElement().setAttribute("aria-atomic", "true");
 
-        Div inner = new Div(composerField, composerHint, announcer);
+        Div inner = new Div(composerField, composerHint, composerOffline, announcer);
         inner.addClassNames("jc-composer__inner", "jc-measure");
 
         composer.addClassName("jc-composer");
@@ -457,6 +569,11 @@ public class ChatView extends Div implements ConversationHost {
         if (transcriptLoadPending) {
             confirmPaintedFrame(transcriptLoad);
         }
+        // The other half of surviving a reload. A reload builds a new view and a new UI over the one
+        // session that outlived the page, and the shell may bind this view to its conversation either
+        // side of the attach - openConversation is documented as being callable before there is a UI.
+        // Asking here as well is what makes the composer right whichever order they run in.
+        restoreDraft();
         // The composer belongs to this view, so the keystroke that reaches it is registered here
         // rather than in the shell, which has no business knowing there is a field to reach.
         Shortcut.FOCUS_COMPOSER.register(this, prompt::focus);
@@ -476,6 +593,38 @@ public class ChatView extends Div implements ConversationHost {
             registration.setEventPropagationAllowed(true);
             registration.setBrowserDefaultAllowed(true);
         });
+    }
+
+    /**
+     * The page is going away with a turn still running: keep what arrived.
+     *
+     * <p>This is the whole of the fix for the worst thing this view did. An answer was written to
+     * the store only from the completion and the failure callbacks, so a reload, a closed tab or a
+     * navigation part-way through one dropped the in-flight turn entirely - a blind review measured
+     * 303 characters of an answer on screen, reloaded, and came back to the question sitting alone
+     * with no answer under it, no marker saying anything had gone wrong and nothing to retry. A
+     * conversation that appears to have been ignored is worse than one that reports an error,
+     * because there is nothing in it to act on.
+     *
+     * <p>What runs is the flush the Stop control already performs, and deliberately not a second
+     * implementation of it: the reader who stopped an answer and the reader whose page went away are
+     * both left holding half a turn, and half a turn is a turn. The parts of stopping that speak to
+     * a reader - the announcement, the caret going back to the composer - are not run here, because
+     * there is no longer anyone on the other end of them.
+     *
+     * <p>Detaching for any other reason is treated the same way, which is the conservative
+     * direction: the cost of closing a turn whose view comes back is one answer the reader has to
+     * ask for again, and the cost of not closing it is an answer streaming into a component tree
+     * nobody can see.
+     *
+     * <p>Must run on the Vaadin UI thread; Vaadin only calls it there.
+     *
+     * @param detachEvent the detach being handled
+     */
+    @Override
+    protected void onDetach(DetachEvent detachEvent) {
+        closeActiveTurn();
+        super.onDetach(detachEvent);
     }
 
     /**
@@ -666,8 +815,15 @@ public class ChatView extends Div implements ConversationHost {
             return;
         }
         stopStreaming();
+        // Filed while the view is still bound to the conversation being left, so the draft goes to
+        // the thread it was written for rather than to the one arriving.
+        rememberDraft();
         conversationId = conversation.id();
-        prompt.clear();
+        // Not a clear. Emptying the composer here is what used to destroy an unsent question every
+        // time a reader looked something up in another thread, and the empty field it left said
+        // nothing about what had been in it. What belongs in the composer is whatever this
+        // conversation was last left holding, which for a conversation never typed into is nothing.
+        restoreDraft();
         showStoredTurns();
         // Said because the transcript cannot say it. A log region announces what is added to it, so
         // replacing a conversation with another one is - to anything listening rather than looking
@@ -702,6 +858,48 @@ public class ChatView extends Div implements ConversationHost {
     private static String displayName(ConversationSummary conversation) {
         String title = conversation.title();
         return title == null || title.isBlank() ? UNNAMED_CONVERSATION : title.strip();
+    }
+
+    /**
+     * Files whatever is in the composer under the conversation it was written for.
+     *
+     * <p>Reached from the field's own value-change listener and once more just before the binding
+     * moves, which is the only moment the two can disagree: the listener fires while the view is
+     * still on the old conversation, and a switch has to file the draft before it changes what
+     * {@link #conversationId} means.
+     *
+     * <p>Does nothing outside a UI. A view that is not attached has no session to write to, and the
+     * only thing it could do instead is invent somewhere to put a reader's text.
+     *
+     * <p>Must run on the Vaadin UI thread; the session lock is held there and nowhere else.
+     */
+    private void rememberDraft() {
+        getUI().map(UI::getSession)
+                .ifPresent(session -> ComposerDrafts.remember(session, conversationId, prompt.getValue()));
+    }
+
+    /**
+     * Puts back whatever the bound conversation was last left holding.
+     *
+     * <p>Always assigns, including the empty string, because this replaces the unconditional clear
+     * that used to run on every switch: a conversation with no draft has to empty the composer, or
+     * the previous thread's text would be sitting in it under the new thread's title, where it can be
+     * sent by accident.
+     *
+     * <p>Assigning fires the field's own listener, which files the value again under the conversation
+     * now bound. That is a write of the value that was just read and is deliberately not guarded
+     * against - the alternative is a re-entrancy flag whose only job is to save one map write.
+     *
+     * <p>Outside a UI there is no session to read, and the composer is emptied rather than left as it
+     * was. {@link #onAttach} asks again the moment there is one, which is the order navigation
+     * actually runs in.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
+    private void restoreDraft() {
+        prompt.setValue(getUI().map(UI::getSession)
+                .map(session -> ComposerDrafts.recall(session, conversationId))
+                .orElse(""));
     }
 
     /** The conversation currently bound, for the shell that chose it. */
@@ -859,7 +1057,15 @@ public class ChatView extends Div implements ConversationHost {
             MessageTurn message = new MessageTurn(turn.role(), turn.text(), turnActions);
             transcriptInner.add(message);
             message.identify(turn.id());
-            message.markComplete();
+            if (turn.failed()) {
+                // Drawn as the failure it was rather than as an answer: the text is this
+                // application's notice, and presenting it as something the model said would be a
+                // reply the assistant never gave. The reader gets the same tint, the same border
+                // and the same "answer again" they were given live.
+                message.fail(FailureNotice.of(turn.text()));
+            } else {
+                message.markComplete();
+            }
         }
         scrollTranscriptToEnd();
     }
@@ -904,6 +1110,26 @@ public class ChatView extends Div implements ConversationHost {
         }
         prompt.clear();
         ask(question);
+    }
+
+    /**
+     * Answers the composer's Enter, whichever of its two meanings it currently has.
+     *
+     * <p>The browser has already been told to keep its own hands off this keystroke - see
+     * {@link #SWALLOW_COMPOSER_ENTER} - so both branches are free to do nothing visible without the
+     * draft changing underneath them. Shift + Enter and an Enter committing an IME candidate never
+     * reach here at all: they are filtered out in the browser, where the newline they need is
+     * inserted.
+     *
+     * <p>Must run on the Vaadin UI thread; it is a DOM event listener and Vaadin only calls it
+     * there.
+     */
+    private void onComposerEnter() {
+        if (streaming) {
+            refuseSendWhileStreaming();
+            return;
+        }
+        submit();
     }
 
     /**
@@ -961,13 +1187,25 @@ public class ChatView extends Div implements ConversationHost {
         String askedOf = conversationId;
         MessageTurn asked = appendMessage(ConversationMessage.Role.USER, question);
         transcripts.append(askedOf, ConversationMessage.Role.USER, question)
-                .ifPresent(recorded -> asked.identify(recorded.id()));
+                .ifPresent(recorded -> {
+                    asked.identify(recorded.id());
+                    // The conversation exists on disk from this line onwards, which is the moment it
+                    // becomes somewhere a reload can come back to. Said here rather than when the
+                    // answer completes because the question alone is already worth returning to, and
+                    // said at all because the shell's other source for this - the conversation
+                    // column - reads a different store that catches up on its own schedule.
+                    announceStored(askedOf);
+                });
         asked.markComplete();
 
         MessageTurn answer = appendMessage(ConversationMessage.Role.ASSISTANT, "");
 
         AtomicBoolean turn = new AtomicBoolean();
+        AtomicBoolean filed = new AtomicBoolean();
+        AtomicReference<TranscriptTurn> record = new AtomicReference<>();
         activeTurn = turn;
+        activeFiled = filed;
+        activeRecord = record;
         activeAnswer = answer;
         activeAskedOf = askedOf;
         setStreaming(true);
@@ -980,7 +1218,8 @@ public class ChatView extends Div implements ConversationHost {
         // The conversation is captured here, on the UI thread, rather than read on the worker: a
         // reader who switches rows mid-answer must not have that answer filed under the row they
         // moved to.
-        activeResponse = responseExecutor.submit(() -> streamResponse(ui, askedOf, question, answer, turn));
+        activeResponse = responseExecutor.submit(
+                () -> streamResponse(ui, askedOf, question, answer, turn, filed, record));
     }
 
     /**
@@ -1073,30 +1312,114 @@ public class ChatView extends Div implements ConversationHost {
     }
 
     /**
+     * Tells the shell a conversation now has a turn on disk, so it can be addressed.
+     *
+     * <p>Distinct from {@link #announceUpdate} on purpose, and the difference is which store is
+     * being talked about. That one says the agent's own record has moved and the column should read
+     * it again; this one says <em>this</em> store has a turn in it, which is what makes the
+     * conversation a place rather than an intention. They were the same announcement once, and the
+     * cost was measured: the column reads the agent's store, that store catches up when it likes,
+     * and the address of the conversation the reader was in the middle of never appeared at all.
+     *
+     * <p>Named with the conversation rather than left implicit, because a turn is filed under the
+     * conversation it was asked of and the reader may have moved on since - the shell has to be able
+     * to tell that this is not about where they are now.
+     *
+     * <p>Must run on the Vaadin UI thread; the shell writes to the address bar from it.
+     *
+     * @param askedOf the conversation the turn was written for
+     */
+    private void announceStored(String askedOf) {
+        MainLayout shell = findAncestor(MainLayout.class);
+        if (shell != null) {
+            shell.activeConversationStored(askedOf);
+        }
+    }
+
+    /**
      * Runs the agent off the UI thread and pushes each token back through {@code ui.access}, which
      * serialises the update on the Vaadin session lock. Blocking here rather than on the UI thread
      * matters: {@code respondTo} does not return until the whole response is complete, and holding
      * the session lock for that long would freeze the browser for the entire turn.
+     *
+     * <h2>Why the answer is filed here as well as on the UI thread</h2>
+     *
+     * <p>Because the UI thread is not guaranteed to arrive. Everything an answer used to do on its
+     * way into the transcript went through {@code ui.access}, including being written down, and a
+     * command handed to {@code ui.access} runs only if there is still a browser attached to that UI
+     * to run it for. A reload does not detach the old UI - Vaadin keeps it until a heartbeat
+     * timeout, which is minutes away - so the completion command sat in a queue nothing would ever
+     * drain, and the answer the agent had already produced in full was never recorded. A blind
+     * review measured 303 characters on screen, reloaded, and came back to the question sitting
+     * alone with no answer, no error and nothing to retry.
+     *
+     * <p>So the tokens are accumulated here, on the thread that receives them, and the finished
+     * answer is filed from here too. The UI thread still files it - it is normally first, and it is
+     * the only side that can hand the turn on screen its identity - and whichever gets there first
+     * wins the once-guard; the other adopts what it finds. That is what makes the record a
+     * consequence of the agent having answered rather than of a browser having been there to watch.
+     *
+     * @param ui       the UI the transcript updates are pushed through
+     * @param askedOf  the conversation this answer belongs to, captured on the UI thread
+     * @param question what to ask
+     * @param answer   the turn on screen the tokens are drawn into
+     * @param turn     this turn's cancellation flag
+     * @param filed    the once-guard for writing this answer down
+     * @param record   where the store's handle on the answer is left for the UI thread
      */
     private void streamResponse(UI ui, String askedOf, String question, MessageTurn answer,
-                                AtomicBoolean turn) {
+                                AtomicBoolean turn, AtomicBoolean filed,
+                                AtomicReference<TranscriptTurn> record) {
+        // What the agent actually produced, kept on the side the tokens arrive on. The turn on
+        // screen is not a substitute: it is only written to inside ui.access, so on a page that has
+        // gone away it holds nothing at all.
+        StringBuilder arrived = new StringBuilder();
+        AtomicBoolean broke = new AtomicBoolean();
         try {
             agent.respondTo(askedOf, question, ResponseListener.of(
-                    token -> apply(ui, turn, () -> answer.append(token)),
+                    token -> {
+                        if (token != null) {
+                            arrived.append(token);
+                        }
+                        apply(ui, turn, () -> answer.append(token));
+                    },
                     () -> apply(ui, turn, () -> {
                         answer.markComplete();
-                        recordAnswer(askedOf, answer);
+                        fileAnswer(filed, record, askedOf, answer.text())
+                                .ifPresent(written -> answer.identify(written.id()));
                         announce(ANSWER_COMPLETE);
                         finishTurn(turn);
                     }),
-                    message -> apply(ui, turn, () -> {
-                        answer.fail(message);
-                        // What went wrong is in the turn, and the transcript stops being busy a
-                        // line later, so the reader is told that and then read it.
-                        announce(ANSWER_FAILED);
-                        finishTurn(turn);
-                    })
+                    message -> {
+                        // Read below, on this thread, to decide whether there is an answer to file.
+                        // A failed turn's fragments are not recorded: the bubble is replaced by this
+                        // application's own sentence, and half a model's answer filed under it would
+                        // come back from the store presented as part of the apology.
+                        broke.set(true);
+                        // Classified here, on the thread the provider's message arrives on, and it
+                        // is the last place that message exists: nothing downstream takes a string.
+                        FailureNotice notice = FailureNotice.of(message);
+                        // Filed from this thread for the same reason a completed answer is - a
+                        // browser that has gone away must not be what decides whether the turn is
+                        // remembered. Without it a reload replaced the exchange with the question
+                        // alone, which reads as a question that was never asked.
+                        Optional<TranscriptTurn> written = fileFailure(filed, record, askedOf, notice);
+                        apply(ui, turn, () -> {
+                            answer.fail(notice);
+                            written.ifPresent(failure -> answer.identify(failure.id()));
+                            // What went wrong is in the turn, and the transcript stops being busy a
+                            // line later, so the reader is told that and then read it.
+                            announce(ANSWER_FAILED);
+                            finishTurn(turn);
+                        });
+                    }
             ));
+            // The response is complete. Whether anyone saw it is a different question, and not one
+            // the transcript's contents are allowed to depend on. A turn the reader stopped is left
+            // alone: they have already been given the half they were reading.
+            if (!broke.get() && !turn.get()) {
+                fileAnswer(filed, record, askedOf, arrived.toString());
+            }
         } catch (RuntimeException e) {
             // The listener's error path is not guaranteed to run for a failure thrown outside the
             // stream, so the composer is released here too. Without this the view would stay locked
@@ -1143,51 +1466,170 @@ public class ChatView extends Div implements ConversationHost {
     }
 
     /**
-     * Stops the turn that is streaming.
+     * Stops the turn that is streaming, and tells the reader it has stopped.
      *
      * <p>{@link Agent} exposes no cancellation, so what is cancelled here is this view's half of the
      * exchange: the flag closes the transcript to further tokens, the composer comes back under the
      * reader's control, and the worker is interrupted in case the provider honours it. The response
      * may still complete server-side; it simply no longer has anywhere to go.
      *
-     * <p>What did arrive is kept. Half an answer is marked as one on screen, and it is recorded as
-     * one too: a reader who stopped a generation was reading it, and a transcript that dropped it
-     * would leave the next question following a turn that appears never to have been answered.
+     * <p>Everything above that sentence is {@link #closeActiveTurn}, which {@link #onDetach} runs
+     * too. What is only here is what is said to somebody who is still looking: the announcement and
+     * the caret going back to the composer are meaningless to a page that has already gone.
+     *
+     * <p>Must run on the Vaadin UI thread.
      */
     private void stopStreaming() {
+        if (!closeActiveTurn()) {
+            return;
+        }
+        announce(ANSWER_STOPPED);
+        prompt.focus();
+    }
+
+    /**
+     * Closes the turn that is streaming and files whatever it had produced.
+     *
+     * <p>What did arrive is kept, whichever way the turn ended. Half an answer is marked as one on
+     * screen and recorded as one too: a reader who stopped a generation was reading it, and a
+     * transcript that dropped it would leave the next question following a turn that appears never
+     * to have been answered. {@link #fileAnswer} declines an answer that arrived empty, so a turn
+     * cut short before its first token leaves no reply attributed to an assistant that never spoke.
+     *
+     * <p>The flag is claimed with a compare-and-set, which is what makes this safe to call from two
+     * places that can race: the reader pressing Stop and the page being torn down are the same
+     * instant often enough to matter, and the second caller has to find the turn already closed
+     * rather than record the answer twice.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to components and to the transcript store.
+     *
+     * @return true when this call is the one that closed the turn, false when there was none
+     *         running or another caller had already closed it
+     */
+    private boolean closeActiveTurn() {
         AtomicBoolean turn = activeTurn;
         if (turn == null || !turn.compareAndSet(false, true)) {
-            return;
+            return false;
         }
         if (activeResponse != null) {
             activeResponse.cancel(true);
         }
         if (activeAnswer != null) {
             activeAnswer.stop();
-            recordAnswer(activeAskedOf, activeAnswer);
+            MessageTurn answer = activeAnswer;
+            fileAnswer(activeFiled, activeRecord, activeAskedOf, answer.text())
+                    .ifPresent(written -> answer.identify(written.id()));
         }
-        announce(ANSWER_STOPPED);
         clearTurn();
-        prompt.focus();
+        return true;
     }
 
     /**
-     * Writes a finished answer into the transcript and hands the turn its identity.
+     * Writes a finished answer down, once, whichever thread gets to it first.
      *
-     * <p>Filed under the conversation the question was asked of rather than the one currently bound,
-     * and skipped entirely when nothing arrived: an empty turn in the transcript would be a reply
-     * the reader could later see attributed to the assistant, and the assistant did not say it.
+     * <p>Three parties can reach the end of one turn and only one of them may write it: the agent's
+     * completion arriving on the UI thread, the same completion seen by the worker that produced it,
+     * and the reader stopping the generation or leaving the page. Which one wins does not matter -
+     * they are filing the same text under the same conversation - but that exactly one wins does,
+     * because the loser filing too would put the answer in the transcript twice.
      *
+     * <p>Filed under the conversation the question was asked of rather than the one currently bound:
+     * a reader who switches rows mid-answer must not have that answer land in the row they moved to.
+     *
+     * <p>Nothing at all is filed for an answer that arrived empty, and the guard is deliberately not
+     * spent on one either. An empty turn in the transcript would be a reply the reader could later
+     * see attributed to the assistant, and the assistant did not say it - and claiming the guard for
+     * it would stop the text that arrives a moment later from ever being written.
+     *
+     * <p>Safe off the UI thread: it touches the transcript store, which serialises its own writes,
+     * and two atomics. It touches no component, which is why handing the turn on screen its identity
+     * is left to the caller.
+     *
+     * @param once    the turn's once-guard, or null when there is no turn
+     * @param into    where to leave the store's handle for whoever files second
      * @param askedOf the conversation this answer belongs to
-     * @param answer  the turn that has just closed
+     * @param text    the answer as it stands, possibly blank
+     * @return the store's record of the answer - the one just written, or the one another thread
+     *         wrote - or empty when nothing has been written for this turn
      */
-    private void recordAnswer(String askedOf, MessageTurn answer) {
-        transcripts.append(askedOf, ConversationMessage.Role.ASSISTANT, answer.text())
-                .ifPresent(recorded -> answer.identify(recorded.id()));
+    private Optional<TranscriptTurn> fileAnswer(AtomicBoolean once, AtomicReference<TranscriptTurn> into,
+                                                String askedOf, String text) {
+        if (once == null || into == null) {
+            return Optional.empty();
+        }
+        if (text == null || text.isBlank() || !once.compareAndSet(false, true)) {
+            return Optional.ofNullable(into.get());
+        }
+        Optional<TranscriptTurn> written =
+                transcripts.append(askedOf, ConversationMessage.Role.ASSISTANT, text);
+        written.ifPresent(into::set);
+        return written;
     }
 
+    /**
+     * Writes a failed turn down, under the same once-guard a finished answer is written under.
+     *
+     * <p>The guard is shared with {@link #fileAnswer} on purpose. A turn that produced fragments
+     * and then broke has one of two things worth recording and not both: the fragments belong to an
+     * answer that no longer exists on screen, because the bubble has been replaced by this
+     * application's own sentence, and filing them would put half a model's paragraph in the store
+     * presented as part of the apology. Whichever party reaches the end of the turn first therefore
+     * wins, exactly as it does for a completed answer.
+     *
+     * <p>Nothing here can leak: the store is handed a {@link FailureNotice}, and a notice's
+     * sentence is one of this application's own.
+     *
+     * <p>Safe off the UI thread; it touches the transcript store and two atomics, and no component.
+     *
+     * @param once    the turn's once-guard, or null when there is no turn
+     * @param into    where to leave the store's handle for whoever files second
+     * @param askedOf the conversation this turn belongs to
+     * @param notice  what the reader was told
+     * @return the store's record of the failure, or empty when nothing was written for this turn
+     */
+    private Optional<TranscriptTurn> fileFailure(AtomicBoolean once, AtomicReference<TranscriptTurn> into,
+                                                 String askedOf, FailureNotice notice) {
+        if (once == null || into == null || !once.compareAndSet(false, true)) {
+            return Optional.ofNullable(into == null ? null : into.get());
+        }
+        Optional<TranscriptTurn> written = transcripts.appendFailure(askedOf, notice);
+        written.ifPresent(into::set);
+        return written;
+    }
+
+    /**
+     * Puts the view back to having no turn, which is a single fact spread over six fields.
+     *
+     * <p>They are cleared together because they are read together and guarded by only one of them.
+     * {@link #closeActiveTurn} decides whether a turn exists from {@code activeTurn} alone and then
+     * treats {@code activeFiled}, {@code activeRecord}, {@code activeAskedOf} and
+     * {@code activeAnswer} as that turn's state; {@link #finishTurn} compares the turn it was given
+     * against {@code activeTurn} for the same reason. Clearing a subset would leave the rest
+     * describing a turn that has ended, and the next caller to reach them would file a finished
+     * answer against a record slot that already holds it.
+     *
+     * <p>{@code activeFiled} and {@code activeRecord} are the pair added last and the reason is
+     * worth stating, because null is not merely tidiness for those two: {@link #fileAnswer} and
+     * {@link #fileFailure} take null in either as "there is no turn" and decline to write. So the
+     * cleared state is what makes a late arrival - a worker completing after the reader stopped the
+     * generation, or after the page went away - fail closed instead of writing a second copy of an
+     * answer into the transcript. Leaving them set would hand a stale once-guard to a caller that had
+     * every right to trust it.
+     *
+     * <p>They also hold a {@link TranscriptTurn} and a component. This view is bound to the session
+     * and outlives every turn drawn in it, so a finished turn left in these fields is a finished turn
+     * retained for as long as the tab is open.
+     *
+     * <p>{@code setStreaming(false)} is part of the same fact rather than a separate step: the
+     * composer's primary action is Stop for exactly as long as there is a turn, and a view with no
+     * turn still offering to stop one is the same inconsistency in the half the reader can see.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to components through {@code setStreaming}.
+     */
     private void clearTurn() {
         activeTurn = null;
+        activeFiled = null;
+        activeRecord = null;
         activeResponse = null;
         activeAnswer = null;
         activeAskedOf = null;

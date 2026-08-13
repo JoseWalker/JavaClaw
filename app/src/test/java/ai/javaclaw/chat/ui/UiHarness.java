@@ -1,16 +1,20 @@
 package ai.javaclaw.chat.ui;
 
 import com.vaadin.flow.component.UI;
+import com.vaadin.flow.dom.DebouncePhase;
 import com.vaadin.flow.dom.DomEvent;
 import com.vaadin.flow.dom.Element;
 import com.vaadin.flow.function.DeploymentConfiguration;
 import com.vaadin.flow.internal.JacksonUtils;
 import com.vaadin.flow.internal.StateTree;
 import com.vaadin.flow.internal.nodefeature.ElementListenerMap;
+import com.vaadin.flow.server.VaadinService;
 import com.vaadin.flow.server.VaadinSession;
+import com.vaadin.flow.shared.JsonConstants;
 import org.mockito.Mockito;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -46,14 +50,38 @@ final class UiHarness {
      * @return a fresh UI with a stub session already set
      */
     static UI ui() {
+        return ui(session());
+    }
+
+    /**
+     * A UI over a session the caller already holds.
+     *
+     * <p>Exists so a test can stage a reload, which is the one browser event that destroys the whole
+     * component tree and keeps the session. Anything a view is expected to carry across a refresh has
+     * to live outside the tree by definition, so a test that reused one UI could not tell a value
+     * that survived from a field that was never cleared.
+     *
+     * @param session the session both UIs are to share; never null
+     * @return a fresh UI bound to it
+     */
+    static UI ui(VaadinSession session) {
         UI ui = new UI();
-        ui.getInternals().setSession(new UnlockedSession());
+        ui.getInternals().setSession(session);
         // Vaadin's overlays add themselves to whichever UI is current when they open, and outside a
         // request there is no such thing unless a test says so. Without it a dialog opened by a
         // shortcut throws instead of appearing, which is a failure about the harness rather than
         // about the shortcut.
         UI.setCurrent(ui);
         return ui;
+    }
+
+    /**
+     * A session with no browser and no lock behind it.
+     *
+     * @return a fresh stub session, holding no attributes
+     */
+    static VaadinSession session() {
+        return new UnlockedSession();
     }
 
     /**
@@ -74,6 +102,14 @@ final class UiHarness {
         ElementListenerMap listeners = element.getNode().getFeature(ElementListenerMap.class);
         List<String> filters = listeners.getExpressions("keydown").stream()
                 .filter(expression -> expression.contains("'" + code + "'"))
+                // Shortest first, and that is not a tie-break: a registration that also asks the
+                // browser to swallow the key publishes a second expression alongside its filter -
+                // the filter wrapped in "(...) && event.preventDefault()" - and the set they arrive
+                // in is unordered. Only the filter itself is what the server matches a delivered
+                // event against, so answering the wrapper means the event arrives, nothing runs, and
+                // the test reports an absence rather than a failure. The wrapper is the filter plus
+                // something, so the filter is always the shorter of the two.
+                .sorted(Comparator.comparingInt(String::length))
                 .toList();
         if (filters.isEmpty()) {
             throw new AssertionError("Nothing listens for " + code + " on <" + element.getTag() + ">");
@@ -81,6 +117,39 @@ final class UiHarness {
         ObjectNode event = JacksonUtils.createObjectNode();
         event.put(filters.getFirst(), true);
         listeners.fireEvent(new DomEvent(element, "keydown", event));
+    }
+
+    /**
+     * Tells the shell how wide the window is, the way the browser tells it.
+     *
+     * <p>The shell learns its arrangement from the viewport, and everything that follows from the
+     * arrangement - whether the column is a drawer, whether it covers the content, whether the page
+     * behind it is taken out of play - is unreachable from a test until this has been said. It is
+     * delivered as the DOM event Vaadin's own resize plumbing listens for, on the element it listens
+     * on, carrying the two values it reads: driving the listener list directly would be a test of a
+     * path the browser does not take.
+     *
+     * @param ui     the UI whose shell is to hear about it
+     * @param width  viewport width in CSS pixels
+     * @param height viewport height in CSS pixels
+     * @throws AssertionError when nothing is listening, which means the shell never asked to be told
+     */
+    static void resizeTo(UI ui, int width, int height) {
+        Element element = ui.getElement();
+        ((StateTree) element.getNode().getOwner()).runExecutionsBeforeClientResponse();
+        ElementListenerMap listeners = element.getNode().getFeature(ElementListenerMap.class);
+        if (listeners.getExpressions("window-resize").isEmpty()) {
+            throw new AssertionError("Nothing is listening for the window being resized");
+        }
+        ObjectNode event = JacksonUtils.createObjectNode();
+        event.put("event.w", width);
+        event.put("event.h", height);
+        // Vaadin debounces its resize listener, and a debounced registration answers only the phase
+        // it asked for - so an event with no phase on it is dropped before any handler sees it,
+        // silently, which is a test that passes by never running the code it is about. The browser
+        // stamps this field; so does this.
+        event.put(JsonConstants.EVENT_DATA_PHASE, DebouncePhase.TRAILING.getIdentifier());
+        listeners.fireEvent(new DomEvent(element, "window-resize", event));
     }
 
     /** A session that exists and holds no lock, which is all the UI is asked for here. */
@@ -92,9 +161,26 @@ final class UiHarness {
          */
         private final DeploymentConfiguration configuration = Mockito.mock(DeploymentConfiguration.class);
 
+        /**
+         * A service that exists only to answer for the deployment configuration.
+         *
+         * <p>{@code Page.getHistory()} asks the session for its service and the service for its
+         * configuration before it can decide which of two scripts to send the browser, so a session
+         * with no service turns every address change into a null dereference. Nothing else is asked
+         * of it: a real service needs a servlet, a registry and a deployment behind it, none of which
+         * a test about a URL has any business standing up.
+         */
+        private final VaadinService service = Mockito.mock(VaadinService.class);
+
         private UnlockedSession() {
             super(null);
             Mockito.when(configuration.isProductionMode()).thenReturn(true);
+            Mockito.when(service.getDeploymentConfiguration()).thenReturn(configuration);
+        }
+
+        @Override
+        public VaadinService getService() {
+            return service;
         }
 
         @Override

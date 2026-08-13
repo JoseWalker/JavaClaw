@@ -12,6 +12,7 @@ import com.vaadin.flow.dom.Element;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 /**
  * One turn of the conversation, as a component that owns it.
@@ -39,8 +40,9 @@ import java.util.function.Consumer;
  * nothing in it was ever final and the whole of it arrived as {@code **} runs and backticks.
  *
  * <p>{@link StreamingProse} separates the two questions. What it reports as final is rendered once
- * and appended above the tail, and only the tail is re-rendered per token - with the inline part of
- * the grammar, which cannot be invalidated by a later line. The moment the turn is closed - completed
+ * and appended above the tail, and only the tail is re-rendered per token - from the buffer, so
+ * nothing drawn there is committed to and a later line can still change what it meant. The moment
+ * the turn is closed - completed
  * or stopped - the raw buffer is rendered whole, so a finished answer is the same markup whether it
  * was watched arriving or read back off disk.
  *
@@ -223,14 +225,104 @@ final class MessageTurn extends Div {
     /**
      * Redraws the sentence still being written.
      *
-     * <p>Replaced wholesale on every token, which is the cost of typesetting it at all: the run of
-     * text this covers is bounded by the settled boundary above it, so what is being rebuilt is the
-     * open block rather than the answer.
+     * <p>Typesetting the tail means re-deriving it on every token: a later token can change what an
+     * earlier one meant, and two asterisks are two asterisks until the closing pair lands. What does
+     * <em>not</em> have to happen on every token is replacing the nodes. The transcript is a
+     * {@code role="log"} region, and a log region announces what is added to it, so tearing the tail
+     * down and putting it back is the answer being re-added to a live region several times a second:
+     * an audit measured 289 nodes added and 284 removed carrying 48,562 characters for a final answer
+     * of 772, against 1.6 characters per final character in the product this is measured against.
+     *
+     * <p>So the common shape is grown instead: when the fresh tail has the same shape as the drawn
+     * one - same nodes, same tags, same attributes - only the text inside it is written, which is
+     * one changed value per node and no structural churn at all. Anything else, including the moment
+     * a delimiter closes and prose becomes markup or a table gains a row, still rebuilds: that is a
+     * real change in what the answer means, and keeping the old node would freeze the answer as the
+     * source it was typed in.
+     *
+     * <p>This is not only the ordinary-prose case. A code block arriving line by line is the shape
+     * that would cost the most to rebuild - a figure, a caption, a control and one element per line
+     * of source, thrown away on every token - and under this rule it is rebuilt once per line rather
+     * than once per token.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to an attached element.
      */
     private void showTail() {
         Element element = content.getElement();
-        element.removeAllChildren();
-        prose.tail().forEach(element::appendChild);
+        List<Element> tail = prose.tail();
+        if (element.getChildCount() != tail.size()) {
+            element.removeAllChildren();
+            tail.forEach(element::appendChild);
+            return;
+        }
+        for (int i = 0; i < tail.size(); i++) {
+            merge(element, i, tail.get(i));
+        }
+    }
+
+    /**
+     * Puts one freshly typeset node where the drawn one is, moving as little as possible.
+     *
+     * <p>The replacement is as deep as the change and no deeper, which is what keeps a code block
+     * affordable. A line of source whose highlighting has changed because a keyword just finished
+     * being typed is a genuinely different subtree and is replaced; the figure around it, its
+     * caption, its copy control and the forty lines above it are not, because nothing about them
+     * changed. Rebuilding from the top on any difference would throw all of that away on the token
+     * that completed a word.
+     *
+     * @param parent the drawn parent
+     * @param index  which of its children this is
+     * @param fresh  what that child should now be
+     */
+    private static void merge(Element parent, int index, Element fresh) {
+        Element drawn = parent.getChild(index);
+        if (sameShape(drawn, fresh)) {
+            writeInto(drawn, fresh);
+            return;
+        }
+        parent.setChild(index, fresh);
+    }
+
+    /**
+     * Whether one node can be written into the other without moving it.
+     *
+     * <p>Compares this node only - its tag, its attributes and how many children it has - because
+     * the children are compared by {@link #merge} as it descends. Attributes count as shape: they
+     * are where this parser puts meaning a reader can see, so a node that kept its tag and changed
+     * its href is a different node, not the same one with new text.
+     */
+    private static boolean sameShape(Element drawn, Element fresh) {
+        if (drawn.isTextNode() || fresh.isTextNode()) {
+            return drawn.isTextNode() && fresh.isTextNode();
+        }
+        if (!drawn.getTag().equals(fresh.getTag())
+                || drawn.getChildCount() != fresh.getChildCount()
+                || !drawn.getAttributeNames().collect(Collectors.toSet())
+                        .equals(fresh.getAttributeNames().collect(Collectors.toSet()))) {
+            return false;
+        }
+        return drawn.getAttributeNames().toList().stream()
+                .allMatch(name -> Objects.equals(drawn.getAttribute(name), fresh.getAttribute(name)));
+    }
+
+    /**
+     * Writes a fresh node's contents onto the drawn node it matches.
+     *
+     * <p>The fresh children are taken as a list first. Handing one of them to {@link #merge} moves
+     * it out of its own parent, which would renumber the siblings this loop has not reached yet -
+     * a defect that shows up as a subtree drawn with its own children in the wrong order.
+     */
+    private static void writeInto(Element drawn, Element fresh) {
+        if (drawn.isTextNode()) {
+            if (!drawn.getText().equals(fresh.getText())) {
+                drawn.setText(fresh.getText());
+            }
+            return;
+        }
+        List<Element> children = fresh.getChildren().toList();
+        for (int i = 0; i < children.size(); i++) {
+            merge(drawn, i, children.get(i));
+        }
     }
 
     void markComplete() {
@@ -261,7 +353,22 @@ final class MessageTurn extends Div {
         bubble.addClassName("jc-message__bubble--rendered");
     }
 
-    void fail(String message) {
+    /**
+     * Replaces this turn with the news that it failed.
+     *
+     * <p>Takes a notice rather than a message, and that is the whole of the fix for a leak: the
+     * provider's own sentence used to be drawn here, so a refusal printed the inference endpoint -
+     * scheme, host, port and path - into the transcript. There is now no signature on this class
+     * that a provider string fits into. See {@link FailureNotice}.
+     *
+     * <p>Must run on the Vaadin UI thread; it rewrites an attached element.
+     *
+     * @param notice what the reader is told; null is treated as {@link FailureNotice#UNKNOWN}
+     *               rather than drawn, because an empty failure is indistinguishable from an empty
+     *               answer
+     */
+    void fail(FailureNotice notice) {
+        String message = Objects.requireNonNullElse(notice, FailureNotice.UNKNOWN).sentence();
         // An error is this application's own sentence, not the model's markdown.
         settled = true;
         failed = true;

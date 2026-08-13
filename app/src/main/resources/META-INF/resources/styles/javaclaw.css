@@ -277,6 +277,25 @@
      */
     --jc-scroll-mask: calc(var(--jc-line-box) * 2);
 
+    /*
+     * The dimmest the streaming caret is allowed to get, as a share of --jc-accent left standing
+     * over the transcript ground.
+     *
+     * It used to be 0.4, which is a blink and is also a failure. Composited over the transcript that
+     * leaves rgb(215,179,152) in light and rgb(105,71,47) in dark - 1.87:1 and 2.20:1 against the
+     * ground either side of it, measured independently by two audits of the running application.
+     * SC 1.4.11 asks 3:1 of a graphical object a reader needs in order to understand state, and this
+     * is the only thing in the transcript that says an answer is still arriving; a floor the caret
+     * spends half of every second at is not a value the reader can be assumed to look past.
+     *
+     * 0.75 clears it with room: 3.46:1 in light and 4.68:1 in dark. It is still a visible step -
+     * saturated ink dropping a quarter of its weight reads as a pulse - and the blink is what the
+     * eye catches rather than the floor it reaches. StylesheetClaimsTest recomputes both figures
+     * from the accent and the surface, so lightening either one fails there rather than in a
+     * critique.
+     */
+    --jc-caret-floor: 0.75;
+
     --jc-tracking-tight: -0.011em;
     --jc-tracking-wide: 0.06em;
 
@@ -420,6 +439,23 @@
     --lumo-body-text-color: var(--jc-text);
     --lumo-secondary-text-color: var(--jc-text-muted);
     --lumo-tertiary-text-color: var(--jc-text-faint);
+    /*
+     * Lumo's global typography paints every h1-h6 in the document from this one property, so leaving
+     * it out did not leave headings inheriting our body colour - it left them on Vaadin's own
+     * light-dark(#192434, #f5f9ff), the only ink on the page from outside this palette.
+     *
+     * That is a hierarchy whose sign depends on the theme. On --jc-surface the heading measured
+     * 15.00:1 against the body's 16.61:1 in light, so a section heading was fainter than the
+     * paragraph under it - two near-blacks separated by hue rather than by tone, and 9.4 Lab
+     * b*-units bluer than a palette built on warm neutrals. In dark it measured 17.19:1 against
+     * 15.02:1 and became the brightest ink on the screen.
+     *
+     * Mapped to --jc-text, so a heading is the same ink as the prose it heads and is told apart by
+     * the size and weight section 7 gives it. One declaration covers the transcript's headings, the
+     * empty state's greeting and any heading added later; painting .jc-prose h1-h3 directly would
+     * have covered the transcript and left the greeting where it was.
+     */
+    --lumo-header-text-color: var(--jc-text);
     --lumo-disabled-text-color: var(--jc-text-faint);
     --lumo-primary-color: var(--jc-accent);
     --lumo-primary-text-color: var(--jc-accent);
@@ -803,6 +839,33 @@ body {
  * One gutter for the whole column. The scroller, the tools above it and the user menu below it all
  * inset by var(--jc-space-s), so a conversation row's hover chip lands on exactly the same two edges
  * as the New chat button directly above it rather than jutting past it by a few pixels.
+ *
+ * It is also the third scroll edge in the shell, and it was the one with nothing marking it.
+ *
+ * The column scrolls under the pinned user menu. Both are --jc-surface-sunken and there is no rule
+ * between them, so the line where this element stops painting is invisible: a row scrolled half past
+ * it lost the bottom half of every letter, and an audit at 834x1112 measured a row drawing seven of
+ * its thirteen ink rows and simply stopping, with the surface either side of the cut identical to
+ * the byte. There was nothing to read that as except broken text - no fade, no rule, no shadow saying
+ * the list continues.
+ *
+ * So the edge is marked the way the transcript's two are, by a ramp rather than by a line, and out of
+ * the same token. The constraint on its length is the one --jc-scroll-mask is documented against: it
+ * has to exceed one line of ink or the gradient ends inside the glyphs and grades a cut instead of
+ * removing it. A row's line box is 13px at 1.9, a hair under the body's 15px at 1.65, so the shell's
+ * one value clears two of them here as well and there is no case for a second token.
+ *
+ * The padding is the other half and is not spacing. The ramp is fixed to the bottom of the scroller
+ * rather than to the content, so without room under the last row the end of the list would sit
+ * permanently inside the fade - a reader who scrolls to the bottom would find the final conversation
+ * greyed out with nothing below it to explain why. At this depth the last row clears the ramp
+ * entirely, and the fade only ever falls on a row that really does have more list under it.
+ *
+ * scroll-padding is the same reservation for the rows the browser scrolls to rather than the reader.
+ * Tabbing down the column asks the browser to bring the next row into view, and it parks it flush
+ * against the bottom edge unless told where the viewing region really ends - so without this the one
+ * row a keyboard reader is actually on would arrive inside the ramp with its focus ring faded out.
+ * That is the only way this fix could leave the column worse than the cut it replaces.
  */
 .jc-sidebar__scroll {
     flex: 1 1 auto;
@@ -810,7 +873,12 @@ body {
     overflow-y: auto;
     overscroll-behavior: contain;
     padding-inline: var(--jc-rail-gutter);
-    padding-block-end: var(--jc-space-s);
+    padding-block-end: var(--jc-scroll-mask);
+    scroll-padding-block-end: var(--jc-scroll-mask);
+    -webkit-mask-image: linear-gradient(to bottom,
+            #000 calc(100% - var(--jc-scroll-mask)), transparent 100%);
+    mask-image: linear-gradient(to bottom,
+            #000 calc(100% - var(--jc-scroll-mask)), transparent 100%);
     scrollbar-width: thin;
     scrollbar-color: var(--jc-border-strong) transparent;
 }
@@ -911,9 +979,17 @@ body {
     gap: 1px;
 }
 
-.jc-group[data-collapsed="true"] .jc-group__items {
-    display: none;
-}
+/* A folded group is empty rather than hidden, so there is deliberately no rule here that hides its
+ * rows. There used to be - display: none on .jc-group[data-collapsed="true"] .jc-group__items - and
+ * it was the wrong half of the application to fold a group in. The server went on building the rows,
+ * put every one of them in the tab ring and in the sidebar's arrow-key sequence, and had no way of
+ * learning that this file had taken them off the screen: a component tree cannot read a stylesheet.
+ * Folding the group you had a conversation open in left its row holding the list's only tab stop
+ * while invisible, and the whole conversation list became unreachable from the keyboard in one
+ * click. ConversationSidebar.group() now draws no rows for a folded group, which makes the container
+ * genuinely empty - it has no padding and no border, so it collapses to nothing on its own. Restoring
+ * a hiding rule here would restore the disagreement: rows appearing inside a folded group is a defect
+ * a reader reports immediately, and is the failure this arrangement is chosen to have. */
 
 /* --- A conversation ------------------------------------------------------ */
 
@@ -1215,6 +1291,14 @@ body {
  * app, rgb(0, 95, 204) at 1px in light and rgb(153, 200, 255) in dark. A blue hairline is not a
  * design decision anyone made, and on the jump pill it lands on a floating, shadowed control where
  * a 1px UA ring is least visible of all.
+ *
+ * The last three are not controls at all, and that is why they were missed a second time. Chrome
+ * gives a scroll container its own tab stop when nothing inside it is focusable - a region a reader
+ * can scroll has to be reachable by the key that scrolls it - so the code block, the table wrapper
+ * and a display formula are each a stop in the cycle by virtue of their overflow declaration alone.
+ * Measured on an answered transcript, the code block's pre was stop 13 of 16 and the only one of
+ * the sixteen reporting `outline: 1px auto rgb(0, 95, 204)` where every other reported
+ * `outline: 2px solid rgb(164, 76, 8)`. The other two carry the same overflow and had the same gap.
  */
 .jc-skip-link:focus-visible,
 .jc-new-chat:focus-visible,
@@ -1228,7 +1312,10 @@ body {
 .jc-dialog__close:focus-visible,
 .jc-jump__button:focus-visible,
 .jc-code__copy:focus-visible,
-.jc-prose a:focus-visible {
+.jc-prose a:focus-visible,
+.jc-prose .jc-code pre:focus-visible,
+.jc-table:focus-visible,
+.jc-math--display:focus-visible {
     outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
     outline-offset: 1px;
 }
@@ -1240,6 +1327,17 @@ body {
 .jc-prose a:focus-visible {
     border-radius: var(--jc-radius-s);
     outline-offset: 2px;
+}
+
+/*
+ * The code block's ring is drawn inside its own edge, the way the transcript's is. The pre fills the
+ * panel from edge to edge - the gutter needs the leading edge, so there is no inline padding - and
+ * .jc-code clips to its radius with overflow: hidden, so a ring offset outwards would be cut off on
+ * both sides by the very box it is announcing. Inset by the ring's own width, so the whole 2px
+ * lands on the snippet rather than half of it landing on the border.
+ */
+.jc-prose .jc-code pre:focus-visible {
+    outline-offset: calc(-1 * var(--jc-focus-ring-width));
 }
 
 /* --- The way past the navigation ----------------------------------------- */
@@ -1327,12 +1425,23 @@ body {
  * Only ever visible on a phone, where the drawer covers what it navigates. It is a control as much
  * as a shade: tapping it is how most readers close a drawer, so it takes pointer events exactly
  * when it is lit.
+ *
+ * How dark it is is not decoration. The drawer is a modal in everything but its name - the shell
+ * makes the page behind it inert, the column announces itself as a dialog, and Escape closes it -
+ * and this is the only part of that a reader who is looking rather than listening can perceive. The
+ * light shade was 0.44, which dropped the canvas from 251 to 153: a 39% fall against the 60% of the
+ * product this is measured against, and at that strength the theme control, the chip outlines and
+ * the model name in the 87px strip beside the drawer all kept crisp edges. A page that has been
+ * taken away was still reading as live interface.
+ *
+ * The claim is stated as a share rather than as an alpha, and it is under test: at most half of the
+ * surface behind it survives, in both themes. The dark shade already cleared that and is unchanged.
  */
 .jc-scrim {
     position: fixed;
     inset: 0;
     z-index: 20;
-    background: light-dark(rgba(28, 22, 16, 0.44), rgba(0, 0, 0, 0.62));
+    background: light-dark(rgba(28, 22, 16, 0.60), rgba(0, 0, 0, 0.62));
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--jc-drawer-transition);
@@ -1365,10 +1474,26 @@ body {
 
 /*
  * The band is full bleed; its contents are not. Everything inside sits on .jc-measure, the same
- * primitive the transcript and the composer use, so the title, the first word of every answer and
- * the composer's own left edge land on one axis at every width - and change gutter at one width,
- * because there is now only one rule deciding the horizontal inset instead of two that disagreed
- * across a 127px band.
+ * primitive the transcript and the composer use, so there is one rule deciding the horizontal inset
+ * instead of the two that used to disagree across a 127px band.
+ *
+ * Where the title actually lands is decided at the foot of this file, under "Where the heading
+ * starts". Wide enough for a gutter outside the measure, the toggle is parked in it and the title
+ * keeps the shared axis exactly. Narrower than that, the toggle stays in flow and the title starts
+ * one control and one gap after it - 56px inboard, constant at every width and at both pointer
+ * sizes, which is the least a leading control can cost.
+ *
+ * It used to be centred there instead, on the argument that a title asserting no axis cannot compete
+ * with the transcript's. It competed hard: an audit measured the title's ink centre at exactly
+ * viewport/2 at every width below the bound, which is 221px from the message body's leading edge at
+ * 768px and 89px at 360px, while the hamburger sat on that leading edge. The header ended up with
+ * two axes and the loud one belonged to a control. Starting after the control is worse than starting
+ * on the edge and better than every centred width that was measured.
+ *
+ * There is deliberately no second arrangement now. One flex row does both cases, because the parked
+ * control leaves the row and the row does the right thing without being told: the heading is the
+ * first item in flow either way. Between 768 and 831 with the column open the toggle is display:none
+ * and the title lands on the axis with no rule saying so.
  *
  * position/z-index are for the fade below: the bar has to paint over the scroller it sits on.
  */
@@ -1853,13 +1978,28 @@ vaadin-dialog::part(footer) {
 
 /* --- Empty state ------------------------------------------------------- */
 
+/*
+ * One inline axis, and it is the leading edge rather than the centre.
+ *
+ * The block had two. The mark, the greeting and the subtitle were centred on the column's midpoint;
+ * the row of prompt chips below them began on the column's leading edge, so the first chip row sat
+ * 46px left of the axis above it and the second, being shorter, 180px left. Reproduced at 834x1112
+ * with the same two offsets. Six elements in one block cannot be aligned two ways: whichever half is
+ * right, the pair reads as a layout that has come apart.
+ *
+ * Resolved towards the leading edge, and not because the chips are more important than the greeting.
+ * It is the axis the rest of this application asserts - the bar's title, the first word of every
+ * answer and the composer's own text all begin on it - and this block is replaced in place by the
+ * first answer, so a centred hero would put the reader's eye somewhere the conversation then is not.
+ * Centring the chips instead would have agreed with the hero and disagreed with everything after it.
+ */
 .jc-empty {
     margin: auto 0;
     padding-block: var(--jc-space-2xl);
     display: flex;
     flex-direction: column;
-    align-items: center;
-    text-align: center;
+    align-items: flex-start;
+    text-align: start;
     gap: var(--jc-space-xs);
 }
 
@@ -1881,6 +2021,20 @@ vaadin-dialog::part(footer) {
     color: var(--jc-text-muted);
     max-width: 28rem;
     transition: color var(--jc-transition-theme);
+}
+
+/*
+ * The reference on the error page, which is a token to be copied rather than prose to be read.
+ *
+ * It borrows the muted hint treatment above it for size and colour and changes exactly one thing:
+ * the letterforms. A reference read aloud over a phone or retyped into a ticket has to survive the
+ * 0/O and 1/l confusions the text face invites, and the monospace stack is where this sheet already
+ * puts anything a reader is expected to transcribe. Nothing else about it is a new tier - it stays
+ * the same size and the same colour as the sentence it sits under, because it is a footnote to that
+ * sentence rather than a second statement.
+ */
+.jc-error__reference {
+    font-family: var(--jc-font-mono);
 }
 
 /* --- Starters ------------------------------------------------------------
@@ -2047,14 +2201,16 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * A trough, not an extinction. At 0.15 the caret measured 1.26:1 against the bubble in dark, which
- * means the one cue that sits where the answer is actually growing was invisible for half of every
- * second. The blink still reads as a blink at 0.4 - it is the change the eye catches, not the floor
- * - and the reader waiting at the end of the line always has something there to wait at.
+ * A trough, not an extinction, and the depth of the trough is a contrast decision rather than a
+ * taste one. At 0.15 the caret measured 1.26:1 against the bubble in dark; at 0.4 it measured
+ * 1.87:1 in light and 2.20:1 in dark, which is still under the 3:1 that SC 1.4.11 asks of the one
+ * graphical object saying an answer is still arriving. The floor lives in --jc-caret-floor, where
+ * the reasoning and both recomputed figures are, so the value cannot be nudged without the
+ * measurement moving with it.
  */
 @keyframes jc-caret {
     50% {
-        opacity: 0.4;
+        opacity: var(--jc-caret-floor);
     }
 }
 
@@ -2414,8 +2570,52 @@ vaadin-dialog::part(footer) {
     margin-block: 0;
 }
 
+/*
+ * A checklist marks its own items, so the bullet is taken away rather than drawn beside the box.
+ * Two markers for one item is a row that reads as an item inside an item, and the indent the
+ * bullet was holding is given back to the box so the text still starts on the list's own axis.
+ */
+.jc-prose .jc-task-list {
+    list-style: none;
+    padding-inline-start: 0;
+}
+
+.jc-prose .jc-task {
+    display: flex;
+    align-items: baseline;
+    gap: var(--jc-space-2xs);
+}
+
+/*
+ * The box is inert by construction - it records what the answer said and cannot be operated - so
+ * it is left at the browser's own size and colour. SC 1.4.11 exempts an inactive component by
+ * name, and a hand-drawn box would be a control that looks live and is not.
+ */
+.jc-prose .jc-task__box {
+    flex: none;
+    margin: 0;
+    /* Baseline alignment puts a replaced element on its own bottom edge, a shade below the text. */
+    transform: translateY(0.1em);
+}
+
+/*
+ * Emphasis is one step below a heading, not the same step.
+ *
+ * It was the same step. h3 takes --jc-font-size-m, which is the size of the prose around it, and
+ * --jc-font-weight-strong from the shared heading rule above; this rule took the same 650. Measured
+ * live, a section heading and a bold phrase inside a paragraph were both 15.0px at 650 and 1.11:1
+ * apart in colour, which is not a difference - two tiers of typography rendering as one, with nothing
+ * to say which was which except that the heading happened to start a line.
+ *
+ * 550 rather than 650 is a face apart and not a number apart: on the system stacks this sheet asks
+ * for, 550 resolves to the semibold and 650 to the bold, so emphasis reads as emphasis against 400
+ * body text and still gives way to a heading. Raising h3 instead was the other way out and is worse.
+ * The scale is a 1.125 minor third and h2 is one step above body at 17px, so an h3 large enough to
+ * separate from emphasis lands on h2 - trading a heading-versus-emphasis collision for a
+ * heading-versus-heading one, which is the same defect one row further up.
+ */
 .jc-prose strong {
-    font-weight: var(--jc-font-weight-strong);
+    font-weight: var(--jc-font-weight-medium);
 }
 
 .jc-prose em {
@@ -2938,15 +3138,66 @@ vaadin-dialog::part(footer) {
  * carried throughout.
  */
 
+/*
+ * The line under the composer, and why it is always there.
+ *
+ * It costs 32px of every screen - a 24px band plus the 8px flex gap above it - and for one round it
+ * was reclaimed, because measured against the reference at 1440x900 this side showed roughly a
+ * quarter less of the answer per screen and this was the largest single piece of chrome that buys
+ * nothing while nobody is typing. The reclaim was `display: none` at rest, with the band switched
+ * back on for the three states that have something to say.
+ *
+ * That reclaim is what an audit then measured as the worst layout defect on the element, agreed by
+ * three critics: at 1440x900 in both themes the transcript/composer divider sat at y=813 at rest and
+ * y=781 while streaming, and the composer box at y=830..884 against y=798..852. The whole footer and
+ * the transcript above it jumped 32px upward at the instant Send became Stop, because "JavaClaw is
+ * responding" arrived into a band that did not exist yet. The reference held its composer at
+ * y=796..881 across idle, streaming and rich.
+ *
+ * A second attempt reserved the band on :focus-within as well, so a turn sent from the composer
+ * found it already open. That closes the reported keystroke and keeps the defect: the band still
+ * comes and goes, only now it comes when the reader clicks into the field - which happens far more
+ * often than a turn starts - and an idle screen still differs from a streaming one by the same 32px.
+ * Trading a jump per turn for a jump per click is not a fix.
+ *
+ * So the band is reserved unconditionally, and the 32px is charged to every screen on purpose. What
+ * the reclaim was really buying was the absence of the key caps, not the absence of the band, and
+ * that is kept below: the caps are hidden in place. Nothing about a turn, a caret or a refusal can
+ * change this box's height, which is the property the audit was measuring.
+ *
+ * The one rule that does take the band away is going offline, further down, and it hands the same
+ * reserved height to the sentence that replaces it in the same frame.
+ */
 .jc-composer__hint {
     display: block;
+    min-height: 1.5rem;
     text-align: center;
     font-size: var(--jc-font-size-xs);
     line-height: 1.5;
     color: var(--jc-text-muted);
-    /* Reserved so swapping the idle hint for the streaming one shifts nothing. */
-    min-height: 1.5rem;
     transition: color var(--jc-transition-theme);
+}
+
+/*
+ * The key caps, which are for the reader with the caret in the composer and for nobody else. They
+ * are the only content this line carries that is not worth a permanent 24px of every screen, and
+ * they are the only content it carries that a reader has to be typing to act on.
+ *
+ * visibility rather than display, and that is the whole of the point: a hidden box still occupies
+ * its line and still takes the flex gap above it, so the band is the same height whether the caps
+ * are showing or not, and revealing them cannot move the transcript. It also keeps them out of the
+ * accessibility tree while they are hidden, which is what display did.
+ *
+ * Told apart by :has(kbd) rather than by a modifier class, because the caps are the only state of
+ * this line built out of elements - the busy hint, the notice and the offline sentence are all text.
+ * A class would be a second thing for the view to keep in step with the content it just wrote.
+ */
+.jc-composer__hint:has(kbd) {
+    visibility: hidden;
+}
+
+.jc-composer__inner:focus-within .jc-composer__hint:has(kbd) {
+    visibility: visible;
 }
 
 /*
@@ -2956,6 +3207,67 @@ vaadin-dialog::part(footer) {
  */
 .jc-composer__hint--notice {
     color: var(--jc-danger);
+}
+
+/* --- Offline ------------------------------------------------------------
+ *
+ * The state this interface used to have no owner for at all. A grep across this sheet for "offline"
+ * or "disconnect" returned nothing, and what that measured is what a reader met: the network was
+ * taken away, Enter was pressed, and for fourteen seconds nothing was added to the transcript, the
+ * composer kept the text, the send control kept its resting treatment and the application said
+ * nothing. The only thing on screen was Vaadin's own connection indicator - a five-pixel striped
+ * band at the very top of the viewport whose sentence is in the DOM and is never painted readably.
+ * A reader's whole evidence was a key that appeared to be broken.
+ *
+ * Everything here is driven by one attribute that the browser writes on the shell, because the
+ * server is exactly what cannot be reached while any of it is true - see MainLayout's connection
+ * watch. Both halves cost nothing while the connection is up: neither box is in flow, so a working
+ * session pays no layout for a state it is not in.
+ *
+ * Declared after the rules that reserve the composer's hint band, which is where it belongs even
+ * though it no longer has to be: the swap below out-specifies every rule that touches that band, so
+ * it wins on weight now rather than on order. It was the other way round for one round, and a rule
+ * that wins only by being last is a rule any later edit can silently unseat.
+ */
+.jc-connection {
+    display: none;
+    padding: var(--jc-space-2xs) var(--jc-space-m);
+    /* The recessed tone the chrome bars already use, so the band belongs to the frame rather than
+     * arriving as a fourth surface. --jc-text on it is 15.08:1 in light and 15.78:1 in dark. */
+    background: var(--jc-surface-sunken);
+    color: var(--jc-text);
+    font-size: var(--jc-font-size-xs);
+    line-height: 1.5;
+    text-align: center;
+    /* The one mark that says this is not ordinary chrome. It is decoration in the 1.4.11 sense -
+     * the sentence carries the meaning - so it is not held to a control boundary's 3:1. */
+    border-block-start: 2px solid var(--jc-danger);
+}
+
+.jc-composer__offline {
+    display: none;
+    text-align: center;
+    font-size: var(--jc-font-size-xs);
+    line-height: 1.5;
+    color: var(--jc-text);
+}
+
+.jc-shell[data-connection="offline"] .jc-connection {
+    display: block;
+}
+
+/*
+ * The key caps go, because a key that cannot reach anything is not worth advertising, and their
+ * band is handed to the sentence that says why. Same reserved height either way, so the composer
+ * does not move under a reader who has just been told they are offline.
+ */
+.jc-shell[data-connection="offline"] .jc-composer__hint {
+    display: none;
+}
+
+.jc-shell[data-connection="offline"] .jc-composer__offline {
+    display: block;
+    min-height: 1.5rem;
 }
 
 /*
@@ -3415,18 +3727,17 @@ vaadin-button > .jc-glyph {
     }
 
     /*
-     * The keyboard hint names two keys a phone does not have. It cost 39px of an 844px screen to
-     * explain a shortcut that cannot be typed there, which is the most expensive line in the layout
-     * per word of use. The busy hint stays - "JavaClaw is responding" is the one thing a reader
-     * waiting at this control does need - and takes its own height when a turn starts, which lands
-     * in the same frame as the transcript gaining a whole new turn.
+     * The keyboard hint names two keys a phone does not have, so the caps never show here - not even
+     * to the reader with the caret in the field, whose caret arrived with a soft keyboard covering
+     * half the screen. This cancels the reveal rather than the reservation: the band under the
+     * composer is the same 24px on a phone as everywhere else, and a phone is where a 32px jump
+     * would cost the most, so hiding the caps must not be allowed to resize anything.
+     *
+     * Written against the same selector as the reveal it cancels, at the same weight, and wins by
+     * being later. Only the focused case needs writing - the resting state is already hidden.
      */
-    .jc-composer__hint:has(kbd) {
-        display: none;
-    }
-
-    .jc-composer__hint {
-        min-height: 0;
+    .jc-composer__inner:focus-within .jc-composer__hint:has(kbd) {
+        visibility: hidden;
     }
 
     /*
@@ -3493,6 +3804,20 @@ vaadin-button > .jc-glyph {
         height: 2.75rem;
         --vaadin-button-height: 2.75rem;
     }
+
+    /*
+     * The one control that was left out of this block, and the worst one to leave out: it floats
+     * over the transcript, it appears only while an answer is arriving somewhere below the fold, and
+     * a reader reaching for it is doing so one-handed in the middle of reading. It stayed 36x36 under
+     * both pointer types - 8px short in each axis - while every control around it reached 44.
+     *
+     * No layout consequence: the button is absolutely positioned over the transcript, so growing it
+     * moves nothing else.
+     */
+    .jc-jump__button {
+        width: 2.75rem;
+        height: 2.75rem;
+    }
 }
 
 /*
@@ -3504,10 +3829,24 @@ vaadin-button > .jc-glyph {
  * drawer closed the header stopped agreeing with the column beneath it.
  *
  * Lifting it out of flow gives the leading edge back to the heading and parks the control in the
- * gutter the measure is already leaving. Only where that gutter exists: below this width the
- * measure runs edge to edge and an absolute control would sit on top of the title.
+ * gutter the measure is already leaving. Only where that gutter is wide enough to hold it, and this
+ * is the width where it first is - derived rather than chosen, because the round that typed 52rem
+ * here handed 112px of viewport to an arrangement that did not need it:
+ *
+ *   the control needs   --jc-space-s (12px, its inset from the band's edge)
+ *                     + 2.75rem      (44px, its box under a coarse pointer, the wider of the two)
+ *                     + --jc-space-xs (8px, clearance before the title's first glyph)
+ *                     = 64px of room to the left of where the title starts
+ *
+ *   a viewport offers   (viewport - --jc-measure) / 2   as gutter on this side
+ *                     + --jc-space-l (24px)             as the measure's own leading padding
+ *
+ *   so 64px is first available at 40rem + 2 * (64 - 24) = 720px = 45rem.
+ *
+ * Below that the control is in flow, ahead of the title, and the title starts one control and one
+ * gap after it - see the bar's own comment for why that is where this stops.
  */
-@media (min-width: 52rem) {
+@media (min-width: 45rem) {
     vaadin-button.jc-topbar__toggle {
         position: absolute;
         inset-inline-start: var(--jc-space-s);

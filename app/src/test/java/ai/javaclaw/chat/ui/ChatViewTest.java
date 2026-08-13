@@ -5,19 +5,24 @@ import ai.javaclaw.agent.ResponseListener;
 import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.ComponentUtil;
-import com.vaadin.flow.component.KeyDownEvent;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.internal.PendingJavaScriptInvocation;
 import com.vaadin.flow.component.textfield.TextArea;
+import com.vaadin.flow.dom.DomEvent;
 import com.vaadin.flow.dom.Element;
 import com.vaadin.flow.internal.JacksonUtils;
 import com.vaadin.flow.internal.StateTree;
 import com.vaadin.flow.internal.change.MapPutChange;
+import com.vaadin.flow.internal.nodefeature.ElementListenerMap;
 import com.vaadin.flow.server.Command;
+import com.vaadin.flow.server.VaadinSession;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.env.MockEnvironment;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -149,6 +154,44 @@ class ChatViewTest {
         view.openConversation(summary("web-abc"));
 
         assertThat(view.conversationId()).isEqualTo("web-abc");
+    }
+
+    /**
+     * The reader's place, end to end, through the wiring that actually runs in the browser.
+     *
+     * <p>An audit asked one question in a new chat, watched the answer land, and read
+     * {@code location.href} still on {@code /ui/} forty-five seconds later; a reload came back to an
+     * empty transcript titled "New chat". The thread had been written - the column had grown a row -
+     * so the only thing lost was where the reader was standing.
+     *
+     * <p>The gap is that the shell used to learn a chat had become a conversation from the
+     * conversation list noticing, and the list reads a different store from the one this view writes
+     * to. So the directory here is one that never learns anything, which is the state the running
+     * application is in for as long as its own store takes to catch up - and the address still has
+     * to appear, because the turn is on disk either way.
+     *
+     * <p>Asserted on what the browser is sent rather than on a call being made: an address that
+     * never leaves the server is not an address.
+     *
+     * <p>Fails on the original, which has nothing to say to the shell when a turn is written and
+     * leaves the URL on the root.
+     */
+    @Test
+    @DisplayName("asking the first question of a new chat puts that chat in the address bar")
+    void addressesTheChatTheReaderIsTypingIn() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new EmptyDirectory(), new MockEnvironment());
+        ui.add(shell);
+        ChatView view = new ChatView(new RecordingAgent(), new SameThreadExecutor(),
+                new FakeTranscripts(), new ConversationActivity());
+        shell.showRouterLayoutContent(view);
+        String conversation = view.conversationId();
+        composer(view).setValue("Say the single word: pineapple");
+        addressesSentTo(ui);
+
+        click(action(view, "Send message"));
+
+        assertThat(addressesSentTo(ui)).contains("c/" + conversation);
     }
 
     @Test
@@ -398,6 +441,97 @@ class ChatViewTest {
         assertThat(sendIsEnabled(view)).isTrue();
     }
 
+    /** The upstream string a blind audit measured on screen, kept verbatim so this is that case. */
+    private static final String UPSTREAM_ERROR =
+            "429 Too Many Requests from POST http://localhost:11434/api/chat";
+
+    /**
+     * What a failed turn is allowed to say.
+     *
+     * <p>The provider's own sentence went into the bubble unaltered, so the transcript printed the
+     * inference endpoint - scheme, host, port and path - to whoever was watching, and would print
+     * whatever else a provider chose to put in a message: an API path, a file path, a key prefix, a
+     * model no one is meant to know is configured. None of that is the reader's business and none
+     * of it helps them; what helps them is being told the turn failed and that asking again is
+     * worth doing.
+     *
+     * <p>Fails on the original at the first assertion: the measured turn read exactly "JavaClaw"
+     * then the upstream string, 72 characters, across 2284 samples.
+     */
+    @Test
+    @DisplayName("a failed turn says what happened without printing the endpoint it happened at")
+    void aFailedAnswerNeverPrintsTheUpstreamEndpoint() {
+        ControllableAgent agent = new ControllableAgent();
+        ChatView view = attachedTo(new InlineUi(), agent, new FakeTranscripts());
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+
+        agent.fail(UPSTREAM_ERROR);
+
+        String shown = transcriptText(view);
+        assertThat(shown).doesNotContain("http://", "localhost", "11434", "/api/chat", "POST");
+        // It still has to be a failure the reader can act on rather than a blank turn.
+        assertThat(shown).contains("Ask again");
+        assertThat(failedTurns(view)).hasSize(1);
+    }
+
+    /**
+     * The other half: a turn that failed has to still be there when the reader comes back.
+     *
+     * <p>Nothing was written for a failed turn, so a reload replaced the exchange with the question
+     * alone - a question that appears never to have been asked, sitting above the next one, with
+     * nothing in the transcript to say the model was ever reached. An audit measured the turn count
+     * going from two to one across a reload with no trace of the failure left anywhere.
+     *
+     * <p>Fails on the original at the turn count: {@code fileAnswer} was skipped entirely once the
+     * failure flag was set, so the store held one turn.
+     */
+    @Test
+    @DisplayName("a failed turn is still in the transcript after the conversation is reopened")
+    void aFailedAnswerSurvivesReopeningTheConversation() {
+        ControllableAgent agent = new ControllableAgent();
+        FakeTranscripts store = new FakeTranscripts();
+        ChatView view = attachedTo(new InlineUi(), agent, store);
+        view.openConversation(summary("web-abc"));
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+        agent.fail(UPSTREAM_ERROR);
+
+        ChatView reopened = attachedTo(new InlineUi(), new SilentAgent(), store);
+        reopened.openConversation(summary("web-abc"));
+
+        assertThat(roles(reopened)).containsExactly("user", "assistant");
+        assertThat(failedTurns(reopened)).as("the reopened turn is drawn as the failure it was")
+                .hasSize(1);
+        assertThat(transcriptText(reopened)).contains("Ask again")
+                .doesNotContain("localhost", "11434");
+        // And the reader can do the one thing that helps, on the turn that failed.
+        assertThat(actions(reopened, "Answer again")).isNotEmpty();
+    }
+
+    /**
+     * A failed turn is this application's own sentence, and the model must never be told it said
+     * it. Regenerating rewinds the conversation to that turn, and the rewind is what would carry a
+     * fabricated assistant message into the model's history if the two stores disagreed about what
+     * a failure is.
+     */
+    @Test
+    @DisplayName("asking again after a failure leaves neither the failure nor the question behind")
+    void regeneratingAFailedAnswerRewindsIt() {
+        ControllableAgent agent = new ControllableAgent();
+        FakeTranscripts store = new FakeTranscripts();
+        ChatView view = attachedTo(new InlineUi(), agent, store);
+        view.openConversation(summary("web-abc"));
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+        agent.fail(UPSTREAM_ERROR);
+
+        click(action(view, "Answer again"));
+
+        assertThat(agent.asked).containsExactly("How do they work?", "How do they work?");
+        assertThat(store.textsOf("web-abc")).containsExactly("How do they work?");
+    }
+
     @Test
     @DisplayName("an answer that completes hands the composer back with the draft intact")
     void aCompletedAnswerHandsTheComposerBackWithTheDraftIntact() {
@@ -481,6 +615,205 @@ class ChatViewTest {
 
         assertThat(agent.asked).containsExactly("How do they work?");
         assertThat(composerValue(view)).isEqualTo("And again");
+    }
+
+    /**
+     * The other half of refusing a send, and the half a sighted reader actually meets.
+     *
+     * <p>An audit typed forty-nine characters mid-stream, pressed Enter, and got the refusal in a
+     * 1x1 off-screen region - plus a stray blank line in their own draft, because the keystroke fell
+     * through to the textarea's default and inserted a newline. So the entire visible consequence of
+     * pressing Enter was that the reader's message was silently edited. Nothing on screen said the
+     * send had been refused, and the one thing that did change was the one thing that should not
+     * have.
+     *
+     * <p>Swallowing the keystroke is not something the server can do after the fact: the default
+     * action happens in the browser, during the dispatch, and the only way to stop it is to have
+     * told the browser to. So the claim is made against what actually crosses to the browser - the
+     * filter that decides whether this keystroke is the composer's, and the expression evaluated
+     * with it. That pairing is the contract; asserting the field's value on the server would assert
+     * a value the browser had already changed underneath it.
+     *
+     * <p>Fails on the original, which registered a component-level key listener: the expressions it
+     * published were a bare key filter, with nothing anywhere asking the browser to prevent
+     * anything.
+     */
+    @Test
+    @DisplayName("Enter is swallowed in the browser, so a refused send cannot edit the draft")
+    void enterDoesNotFallThroughIntoTheDraft() {
+        ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
+
+        assertThat(keydownExpressions(view))
+                .as("the composer asks the browser to swallow the Enter it answers")
+                .anyMatch(expression -> expression.contains("preventDefault"));
+    }
+
+    /**
+     * The keystroke that has to keep its default, and the reason the swallow above is filtered
+     * rather than unconditional: Shift + Enter is how a message spans several lines, so the browser
+     * has to go on inserting that newline.
+     *
+     * <p>Asserted on the filter itself rather than by pressing the key, because "the server was not
+     * told" and "the browser did nothing" are the same observation here and only the first is
+     * reachable from a component tree. The filter is what the browser evaluates before either
+     * happens.
+     */
+    @Test
+    @DisplayName("Shift + Enter is not the composer's keystroke, so it still opens a new line")
+    void shiftEnterIsLeftToTheTextarea() {
+        ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
+
+        assertThat(enterFilter(view))
+                .as("the composer's Enter filter stands aside for Shift, and for an IME composing")
+                .contains("!event.shiftKey")
+                .contains("!event.isComposing");
+    }
+
+    /**
+     * The severity-1 defect this pins: a reload mid-answer destroyed the answer.
+     *
+     * <p>An audit measured 303 characters of an assistant turn on screen, pressed reload, and came
+     * back to the question with no answer under it, no error marker and nothing to retry - twice, on
+     * two runs. The answer was only ever written to the store from the completion and failure
+     * callbacks, so a page that went away before either of them ran took the whole in-flight turn
+     * with it. What the reader was left with is worse than an error: a conversation that appears to
+     * have been ignored, with no sign that anything was ever said.
+     *
+     * <p>The flush is the same one the Stop control performs, for the same reason - half an answer
+     * the reader was reading is a turn, and dropping it leaves the next question following a
+     * question that was never answered.
+     *
+     * <p>Fails on the original, which had no detach listener at all: the store ends up holding the
+     * question alone.
+     */
+    @Test
+    @DisplayName("a page that goes away mid-answer keeps what had already arrived")
+    void keepsAPartialAnswerWhenThePageGoesAway() {
+        ControllableAgent agent = new ControllableAgent();
+        FakeTranscripts transcripts = new FakeTranscripts();
+        UI ui = new InlineUi();
+        ChatView view = attachedTo(ui, agent, transcripts);
+        String conversation = view.conversationId();
+        composer(view).setValue("How do virtual threads work?");
+        click(action(view, "Send message"));
+        agent.emit("They unmount when they block");
+
+        // A reload, a closed tab, a navigation away: the component tree goes, the store stays.
+        ui.remove(view);
+
+        assertThat(transcripts.turns(conversation)).extracting(TranscriptTurn::text)
+                .containsExactly("How do virtual threads work?", "They unmount when they block");
+    }
+
+    /**
+     * The same severity-1 defect, at the point it actually happens on a reload.
+     *
+     * <p>Detaching the view is not what a reload does to the UI it leaves behind. Vaadin keeps that
+     * UI registered against the session until a heartbeat timeout, which is minutes away, so nothing
+     * is detached at the moment the reader presses reload - and every path an answer had into the
+     * transcript went through {@code ui.access}, whose commands run only if there is still a browser
+     * on the other end to run them. The agent finished the answer in full, on its own thread, and
+     * the whole of it was dropped into a queue nothing would ever drain.
+     *
+     * <p>This is that UI: one that accepts commands and never runs them, which is exactly what an
+     * orphaned UI is. The claim is that the transcript ends up holding the answer anyway, because
+     * the agent produced it - and it is the claim the detach test above cannot make, since a reload
+     * produces no detach to hang anything on.
+     *
+     * <p>Fails on the original, where the store is left holding the question alone.
+     */
+    @Test
+    @DisplayName("an answer completed for a browser that had gone is written down all the same")
+    void recordsAnAnswerNoBrowserWasThereToReceive() {
+        FakeTranscripts transcripts = new FakeTranscripts();
+        ChatView view = attachedTo(new DeafUi(),
+                new BlockingAgent("They unmount ", "when they block"), transcripts);
+        String conversation = view.conversationId();
+        composer(view).setValue("How do virtual threads work?");
+
+        click(action(view, "Send message"));
+
+        assertThat(transcripts.turns(conversation)).extracting(TranscriptTurn::text)
+                .containsExactly("How do virtual threads work?", "They unmount when they block");
+    }
+
+    /**
+     * The other side of filing from two threads: the answer must be written down once.
+     *
+     * <p>A live browser reaches the end of a turn twice - the completion the worker saw and the same
+     * completion arriving on the UI thread - and both are now able to write. Two copies of one
+     * answer in the transcript would be a worse defect than the one being fixed, because it survives
+     * the reload rather than being cured by it.
+     */
+    @Test
+    @DisplayName("an answer both threads reach the end of is recorded once, not twice")
+    void recordsACompletedAnswerExactlyOnce() {
+        FakeTranscripts transcripts = new FakeTranscripts();
+        ChatView view = attachedTo(new InlineUi(),
+                new BlockingAgent("They unmount ", "when they block"), transcripts);
+        String conversation = view.conversationId();
+        composer(view).setValue("How do virtual threads work?");
+
+        click(action(view, "Send message"));
+
+        assertThat(transcripts.turns(conversation)).extracting(TranscriptTurn::text)
+                .containsExactly("How do virtual threads work?", "They unmount when they block");
+        // And the turn on screen still knows what the store called it, or the reader cannot ask it
+        // again: the thread that wrote the answer down is not always the one holding the component.
+        assertThat(actions(view, "Answer again")).isNotEmpty();
+    }
+
+    /**
+     * That a turn which arrived with nothing is not recorded as an answer.
+     *
+     * <p>The flush above must not become a way of writing empty assistant turns into transcripts:
+     * a reader who reloads during the wait before the first token would otherwise find a reply
+     * attributed to the assistant that the assistant never made.
+     */
+    @Test
+    @DisplayName("a page that goes away before the first token records no answer at all")
+    void recordsNothingWhenNothingHadArrived() {
+        ControllableAgent agent = new ControllableAgent();
+        FakeTranscripts transcripts = new FakeTranscripts();
+        UI ui = new InlineUi();
+        ChatView view = attachedTo(ui, agent, transcripts);
+        String conversation = view.conversationId();
+        composer(view).setValue("How do virtual threads work?");
+        click(action(view, "Send message"));
+
+        ui.remove(view);
+
+        assertThat(transcripts.turns(conversation)).extracting(TranscriptTurn::text)
+                .containsExactly("How do virtual threads work?");
+    }
+
+    // ------------------------------------------------------- while the connection is gone
+
+    /**
+     * Offline was not a designed state anywhere in this application.
+     *
+     * <p>An audit went offline and pressed Enter: twenty samples over fourteen seconds found no turn
+     * added, the composer still holding the text, the send control still painted as it is when there
+     * is nothing to send, and not one word from the application about any of it. The only signal was
+     * Vaadin's own five-pixel striped band, whose text is in the DOM and is not painted readably.
+     *
+     * <p>The composer's hint line is where a reader looking at the keystroke that did nothing is
+     * looking, so that is where the sentence goes. It is server-rendered and hidden until the
+     * stylesheet reveals it, because the one thing that is certainly unavailable while the
+     * connection is down is the server.
+     *
+     * <p>Fails on the original: there was no such element, and nothing in the sheet that mentioned
+     * being offline.
+     */
+    @Test
+    @DisplayName("the composer carries a line for the state where nothing can be sent")
+    void theComposerSaysWhatOfflineMeans() {
+        ChatView view = attached(new RecordingAgent(), new FakeTranscripts());
+
+        String offline = byClass(view, "jc-composer__offline").getTextRecursively();
+        assertThat(offline).contains("Offline");
+        // No promise of a queue. The message is not sent later and must not read as though it were.
+        assertThat(offline).doesNotContain("will be sent");
     }
 
     // ------------------------------------------------------- answering again
@@ -582,7 +915,91 @@ class ChatViewTest {
                 .containsExactly("How do they work?", "A good answer.", "What about pinning?");
     }
 
+    // ------------------------------------------------------------------ the unsent draft
+
+    /**
+     * The half-written question, which used to be thrown away by the browser's Reload button.
+     *
+     * <p>A blind review typed "an unsent draft a reader would expect to survive a refresh" into the
+     * composer, reloaded, and came back to an empty field - twice, on two different threads. The
+     * product this UI is measured against restored the text verbatim. Nothing about the draft was
+     * ever written down outside the component tree, and a reload destroys the whole of that tree, so
+     * there was nothing for the second page load to read.
+     *
+     * <p>Fails on the original for exactly that reason: the second view is built from nothing but
+     * the session, and the original put nothing there.
+     */
+    @Test
+    @DisplayName("an unsent draft is still in the composer after a reload")
+    void keepsAnUnsentDraftAcrossAReload() {
+        VaadinSession session = UiHarness.session();
+        ChatView before = inSession(session, new SilentAgent(), new FakeTranscripts());
+        before.openConversation(summary("web-abc"));
+        composer(before).setValue(DRAFT);
+
+        // A reload is a new UI and a new view over the one session that outlives the page.
+        ChatView after = inSession(session, new SilentAgent(), new FakeTranscripts());
+        after.openConversation(summary("web-abc"));
+
+        assertThat(composerValue(after)).isEqualTo(DRAFT);
+    }
+
+    /**
+     * That the draft belongs to the conversation rather than to the composer.
+     *
+     * <p>The reload is only the loudest way to lose it. Clicking another row cleared the field just
+     * as completely, so a reader who looked something up mid-question came back to nothing - and a
+     * store keyed by anything less than the conversation would hand them the other thread's text,
+     * which is worse than losing their own.
+     *
+     * <p>Fails on the original at the last assertion: {@code openConversation} cleared the composer
+     * unconditionally and kept no record of what it cleared.
+     */
+    @Test
+    @DisplayName("a draft left in one conversation is waiting there when the reader comes back")
+    void keepsADraftPerConversation() {
+        ChatView view = inSession(UiHarness.session(), new SilentAgent(), new FakeTranscripts());
+        view.openConversation(summary("web-abc"));
+        composer(view).setValue("half a question about virtual threads");
+
+        view.openConversation(summary("web-def"));
+        // The other thread's composer is its own, and empty.
+        assertThat(composerValue(view)).isEmpty();
+        composer(view).setValue("something else entirely");
+        view.openConversation(summary("web-abc"));
+
+        assertThat(composerValue(view)).isEqualTo("half a question about virtual threads");
+    }
+
+    /**
+     * That a question which was actually asked is not offered back as though it were unsent.
+     *
+     * <p>The failure mode a draft store invites: keep what was in the field and every reload hands
+     * the reader their last question again, primed to be sent a second time. The composer is emptied
+     * by sending, and emptying it has to reach the record as well as the field.
+     *
+     * <p>This passes on the original - which kept nothing at all, and so could not offer anything
+     * back - and is here to stop the fix for the two tests above from shipping that defect instead.
+     */
+    @Test
+    @DisplayName("a question that was sent is not offered back as an unsent draft")
+    void forgetsADraftOnceItHasBeenSent() {
+        VaadinSession session = UiHarness.session();
+        ChatView before = inSession(session, new RecordingAgent(), new FakeTranscripts());
+        before.openConversation(summary("web-abc"));
+        composer(before).setValue("What is a sealed interface?");
+        click(action(before, "Send message"));
+
+        ChatView after = inSession(session, new SilentAgent(), new FakeTranscripts());
+        after.openConversation(summary("web-abc"));
+
+        assertThat(composerValue(after)).isEmpty();
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /** The draft the blind review typed, kept verbatim so this test is the reported case. */
+    private static final String DRAFT = "an unsent draft a reader would expect to survive a refresh";
 
     /**
      * A view inside a UI and answering on the calling thread.
@@ -627,9 +1044,26 @@ class ChatViewTest {
      * servlet and a deployment configuration to exist at all.
      */
     private static ChatView inSession(Agent agent, ConversationTranscripts transcripts) {
+        return inSession(UiHarness.session(), agent, transcripts);
+    }
+
+    /**
+     * The same view, in a UI over a session the caller already holds.
+     *
+     * <p>The draft tests need it: what a reload does is destroy the component tree and keep the
+     * session, so staging one means building a second view over the first one's session. Sharing the
+     * session is the whole of the fixture - if a value comes back, it came back through the session,
+     * because nothing else crosses from one UI to the other.
+     *
+     * @param session     the session to attach into, shared with any other view built from it
+     * @param agent       the agent the view puts questions to
+     * @param transcripts the store the view reads and writes
+     * @return the view, attached and ready
+     */
+    private static ChatView inSession(VaadinSession session, Agent agent,
+                                      ConversationTranscripts transcripts) {
         ChatView view = new ChatView(agent, new SameThreadExecutor(), transcripts, new ConversationActivity());
-        UI ui = UiHarness.ui();
-        ui.add(view);
+        UiHarness.ui(session).add(view);
         return view;
     }
 
@@ -663,6 +1097,13 @@ class ChatViewTest {
 
     private static String transcriptText(ChatView view) {
         return view.getElement().getTextRecursively();
+    }
+
+    /** The turns the transcript is presenting as failures, by the class the stylesheet tints. */
+    private static List<Element> failedTurns(ChatView view) {
+        return descendants(view.getElement())
+                .filter(element -> element.getClassList().contains("jc-message--failed"))
+                .toList();
     }
 
     private static List<Element> actions(ChatView view, String label) {
@@ -737,15 +1178,54 @@ class ChatViewTest {
     /**
      * Presses Enter in the composer, unmodified.
      *
-     * <p>Fired as the event rather than by calling the handler: what is under test is that a plain
-     * Enter reaches a listener which refuses to send and says so, and a test that called the
-     * refusal directly would pass on a view where nothing was listening.
+     * <p>Delivered through the DOM listener the browser would deliver it to, rather than as a
+     * component event: the composer's Enter is registered on the element so that the same
+     * registration can also tell the browser to swallow the keystroke, and a test that fired a
+     * {@code KeyDownEvent} would pass on a view whose element listener had been removed.
      *
      * @param view the view whose composer receives the keystroke
+     * @throws AssertionError when nothing in the composer is listening for Enter
      */
     private static void pressEnter(ChatView view) {
-        TextArea prompt = composer(view);
-        ComponentUtil.fireEvent(prompt, new KeyDownEvent(prompt, "Enter"));
+        Element field = composer(view).getElement();
+        ObjectNode event = JacksonUtils.createObjectNode();
+        event.put(enterFilter(view), true);
+        field.getNode().getFeature(ElementListenerMap.class)
+                .fireEvent(new DomEvent(field, "keydown", event));
+    }
+
+    /**
+     * The expression the browser evaluates to decide whether an Enter is this composer's to answer.
+     *
+     * <p>Shortest first, for the reason {@link UiHarness#press} documents: a registration that also
+     * asks the browser to swallow the key publishes a second expression alongside its filter, and
+     * only the filter is what the server matches a delivered event against.
+     *
+     * @param view the view under test
+     * @return the filter expression, never null
+     * @throws AssertionError when the composer listens for no keystroke carrying Enter
+     */
+    private static String enterFilter(ChatView view) {
+        return keydownExpressions(view).stream()
+                .filter(expression -> expression.contains("'Enter'"))
+                .min(Comparator.comparingInt(String::length))
+                .orElseThrow(() -> new AssertionError("Nothing in the composer listens for Enter"));
+    }
+
+    /**
+     * Every expression the browser is asked to evaluate for a keystroke in the composer.
+     *
+     * <p>This is the whole of what crosses to the client for a key press: the filter that decides
+     * whether the server hears about it, and the event data expressions evaluated when it does. A
+     * claim about what the browser does with the keystroke has to be made against these, because
+     * nothing else about it exists on the server.
+     *
+     * @param view the view under test
+     * @return the expressions, in no particular order
+     */
+    private static List<String> keydownExpressions(ChatView view) {
+        return List.copyOf(composer(view).getElement().getNode()
+                .getFeature(ElementListenerMap.class).getExpressions("keydown"));
     }
 
     /** The composer at the foot of the view, told apart from a message editor by its label. */
@@ -823,6 +1303,56 @@ class ChatViewTest {
             throw new AssertionError("The server never asked the browser to confirm a painted frame");
         }
         waiting.forEach(frame -> frame.complete(JacksonUtils.nullNode()));
+    }
+
+    /**
+     * The addresses the server has told the browser to show since this was last called.
+     *
+     * <p>Read off the pending script queue rather than off any field, for the reason the test that
+     * uses it is about: an address that never leaves the server is not an address. Vaadin sends one
+     * of two scripts depending on whether the client router is in play, so both shapes are
+     * recognised. Draining clears the queue, so each call reports one visit.
+     *
+     * @param ui the UI whose queue to drain
+     * @return the locations passed to a history call, in order, possibly empty
+     */
+    private static List<String> addressesSentTo(UI ui) {
+        StateTree tree = (StateTree) ui.getElement().getNode().getOwner();
+        tree.runExecutionsBeforeClientResponse();
+        return ui.getInternals().dumpPendingJavaScriptInvocations().stream()
+                .map(PendingJavaScriptInvocation::getInvocation)
+                .filter(invocation -> invocation.getExpression().contains("pushState")
+                        || invocation.getExpression().contains("replaceState")
+                        || invocation.getExpression().contains("vaadin-navigate"))
+                .flatMap(invocation -> invocation.getParameters().stream())
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .toList();
+    }
+
+    /**
+     * A conversation list that has never heard of anything, and never will.
+     *
+     * <p>Not a convenience: it is the state the running application is in between a turn being
+     * written and the store the column reads catching up with it, which is the window the address
+     * defect lived in.
+     */
+    private static final class EmptyDirectory implements ConversationDirectory {
+
+        @Override
+        public List<ConversationSummary> conversations() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<ConversationSummary> find(String id) {
+            return Optional.empty();
+        }
+
+        @Override
+        public List<ConversationMessage> transcript(String id) {
+            return List.of();
+        }
     }
 
     private static Element byClass(ChatView view, String className) {
@@ -906,6 +1436,9 @@ class ChatViewTest {
         /** The listener of the turn currently open, or null before the first question. */
         private ResponseListener listener;
 
+        /** Every question this agent has been put, in order, for the tests that count them. */
+        private final List<String> asked = new ArrayList<>();
+
         @Override
         public String respondTo(String conversationId, String question) {
             throw new UnsupportedOperationException("The streaming form is the one under test");
@@ -914,6 +1447,7 @@ class ChatViewTest {
         @Override
         public String respondTo(String conversationId, String question, ResponseListener listener) {
             this.listener = listener;
+            asked.add(question);
             return "";
         }
 
@@ -931,6 +1465,19 @@ class ChatViewTest {
             open().onError(message);
         }
 
+        /**
+         * Delivers one token into the open turn, leaving it open.
+         *
+         * <p>Needed by the tests about a page that goes away mid-answer: what has to survive is the
+         * part of the answer that had already arrived, and a turn that never received a token
+         * cannot tell a flush that works from one that does nothing.
+         *
+         * @param token the fragment the provider has just produced
+         */
+        void emit(String token) {
+            open().onToken(token);
+        }
+
         /** Ends the open turn the way a provider that finished normally would. */
         void complete() {
             open().onComplete();
@@ -946,6 +1493,57 @@ class ChatViewTest {
                 throw new AssertionError("No turn is open: nothing has been asked yet");
             }
             return listener;
+        }
+    }
+
+    /**
+     * An agent that answers inside the call, the way a real provider does.
+     *
+     * <p>{@link ControllableAgent} returns from {@code respondTo} before the answer exists, which is
+     * useful for holding a turn open and wrong for anything asserting what happens when a response
+     * finishes: the contract {@link ChatView} is written against is that {@code respondTo} does not
+     * return until the whole response is complete.
+     */
+    private static final class BlockingAgent implements Agent {
+
+        private final List<String> tokens;
+
+        private BlockingAgent(String... tokens) {
+            this.tokens = List.of(tokens);
+        }
+
+        @Override
+        public String respondTo(String conversationId, String question) {
+            throw new UnsupportedOperationException("The streaming form is the one under test");
+        }
+
+        @Override
+        public String respondTo(String conversationId, String question, ResponseListener listener) {
+            tokens.forEach(listener::onToken);
+            listener.onComplete();
+            return String.join("", tokens);
+        }
+
+        @Override
+        public <T> T prompt(String conversationId, String input, Class<T> result) {
+            throw new UnsupportedOperationException("Not asked in these tests");
+        }
+    }
+
+    /**
+     * A UI that takes what a worker hands it and never runs any of it.
+     *
+     * <p>This is what a UI becomes when its browser goes away: {@code access} still accepts the
+     * command, because Vaadin has no reason yet to believe the tab is gone, and the command waits
+     * for a client response that is never coming. Anything a turn does only inside {@code access}
+     * therefore does not happen at all - which is the whole of the defect the reload tests are
+     * about.
+     */
+    private static final class DeafUi extends UI {
+
+        @Override
+        public Future<Void> access(Command command) {
+            return CompletableFuture.completedFuture(null);
         }
     }
 
@@ -1059,6 +1657,22 @@ class ChatViewTest {
             TranscriptTurn turn = new TranscriptTurn(mint(), role, text);
             byConversation.computeIfAbsent(id, key -> new ArrayList<>()).add(turn);
             return Optional.of(turn);
+        }
+
+        @Override
+        public Optional<TranscriptTurn> appendFailure(String id, FailureNotice notice) {
+            if (notice == null) {
+                return Optional.empty();
+            }
+            TranscriptTurn turn = new TranscriptTurn(mint(), ConversationMessage.Role.ASSISTANT,
+                    notice.sentence(), TranscriptTurn.Outcome.FAILED);
+            byConversation.computeIfAbsent(id, key -> new ArrayList<>()).add(turn);
+            return Optional.of(turn);
+        }
+
+        /** What this store holds for one conversation, as text, for the tests that count turns. */
+        List<String> textsOf(String id) {
+            return byConversation.getOrDefault(id, List.of()).stream().map(TranscriptTurn::text).toList();
         }
 
         @Override

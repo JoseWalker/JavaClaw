@@ -5,6 +5,7 @@ import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.ComponentUtil;
 import com.vaadin.flow.component.textfield.TextArea;
 import com.vaadin.flow.dom.Element;
+import com.vaadin.flow.internal.StateNode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -100,11 +101,14 @@ class MessageTurnTest {
         MessageTurn answer = new MessageTurn(ConversationMessage.Role.ASSISTANT, "", new NoActions());
         answer.identify("0123456789abcdef");
 
-        answer.fail("The model could not be reached.");
+        answer.fail(FailureNotice.UNREACHABLE);
 
         // Copying this UI's own apology is not a thing anyone wants to paste somewhere.
         assertThat(actions(answer)).containsExactly("Answer again");
         assertThat(answer.getClassNames()).contains("jc-message--failed");
+        // The bubble can only ever say one of this application's own sentences: there is no
+        // signature on this class that a provider's message fits into. See FailureNoticeTest.
+        assertThat(text(answer)).contains(FailureNotice.UNREACHABLE.sentence());
     }
 
     @Test
@@ -199,7 +203,141 @@ class MessageTurnTest {
         assertThat(actions(answer)).containsExactly("Copy message", "Answer again");
     }
 
+    /**
+     * The transcript is a {@code role="log"} region, and a log region announces what is added to it.
+     *
+     * <p>An audit put a {@code MutationObserver} on the transcript across one streamed answer and
+     * measured 289 nodes added and 284 removed, carrying 48,562 characters, for a final answer of 772
+     * - a 63-fold amplification, because the block still being written was torn down and rebuilt on
+     * every single token. The reference product under the same instrumentation amplified 1.6-fold.
+     *
+     * <p>Almost all of that churn is avoidable and none of it is useful: a sentence arriving as
+     * ordinary prose is one text node getting longer, and rebuilding it means the region reports the
+     * whole sentence as newly added text several times a second. Where the tail really does need
+     * typesetting - a code span closing, emphasis completing - the rebuild is the only correct answer
+     * and still happens; this is about the ninety-odd tokens in between.
+     *
+     * <p>Fails on the original, which replaced the node on every token.
+     */
+    @Test
+    @DisplayName("prose arriving token by token grows one node rather than replacing it each time")
+    void doesNotRebuildThePlainTailOnEveryToken() {
+        MessageTurn answer = new MessageTurn(ConversationMessage.Role.ASSISTANT, "", new NoActions());
+        answer.append("Virtual ");
+        // The node behind the element, not the element: Element is a fresh handle on every lookup,
+        // and it is the node that is either updated or detached and replaced on the wire.
+        StateNode firstTail = tail(answer).getNode();
+
+        answer.append("threads ");
+        answer.append("unmount ");
+        answer.append("when they block.");
+
+        assertThat(tail(answer).getNode()).as("the tail was replaced rather than extended")
+                .isSameAs(firstTail);
+        assertThat(tail(answer).getText()).isEqualTo("Virtual threads unmount when they block.");
+    }
+
+    /**
+     * The other half: growing a node in place must not be allowed to skip a rebuild that was needed.
+     *
+     * <p>The tail is re-typeset on every token precisely because a later token can change what an
+     * earlier one meant - two asterisks are two asterisks until the closing pair arrives, and then
+     * they are emphasis. An optimisation that kept the text node would freeze the answer as the
+     * source it was typed in, which is the defect the tail typesetting exists to fix.
+     */
+    @Test
+    @DisplayName("a tail that becomes markup is still typeset, not left as the source")
+    void stillTypesetsATailThatBecomesMarkup() {
+        MessageTurn answer = new MessageTurn(ConversationMessage.Role.ASSISTANT, "", new NoActions());
+
+        answer.append("Use **virtual");
+        assertThat(text(answer)).contains("**virtual");
+
+        answer.append(" threads** here");
+
+        assertThat(tags(answer)).contains("strong");
+        assertThat(text(answer)).doesNotContain("**");
+    }
+
+    /**
+     * The same question as the two tests above, asked of the block a fence opens.
+     *
+     * <p>A live audit of the running build watched {@code ```bash} sit on screen as body prose with
+     * the snippet under it in the proportional prose font and no {@code pre} in the document at all.
+     * A code block is the one part of an answer where the font is the information - a reader
+     * skimming a snippet is reading indentation - so the seconds before the closing fence arrives
+     * are exactly the seconds it is worth having.
+     *
+     * <p>Fails on the original: the tail's fenced run was emitted as one text node holding the
+     * delimiter and the source together.
+     */
+    @Test
+    @DisplayName("a code block arriving token by token is drawn as code from its opening fence")
+    void drawsAnOpenCodeBlockAsCode() {
+        MessageTurn answer = new MessageTurn(ConversationMessage.Role.ASSISTANT, "", new NoActions());
+
+        answer.append("```bash\n");
+        answer.append("./gradlew ");
+        answer.append("build\n");
+
+        assertThat(tags(answer)).contains("figure", "pre", "code");
+        assertThat(text(answer)).contains("./gradlew build").doesNotContain("```");
+    }
+
+    /**
+     * And the churn half of it, which is why the block is grown rather than rebuilt.
+     *
+     * <p>The transcript is a {@code role="log"} region. Re-rendering a sixty-line snippet on every
+     * token would report the whole snippet as newly added text dozens of times a second, which is
+     * the amplification {@link #doesNotRebuildThePlainTailOnEveryToken} exists to prevent - and
+     * drawing the block properly must not buy back the defect that test pins.
+     *
+     * <p>Fails on the original for a different reason than it would pass for: there was no code
+     * element in the streaming tail to keep.
+     */
+    @Test
+    @DisplayName("code arriving inside an open block extends it rather than rebuilding it")
+    void growsAnOpenCodeBlockInPlace() {
+        MessageTurn answer = new MessageTurn(ConversationMessage.Role.ASSISTANT, "", new NoActions());
+        answer.append("```bash\n./gradlew ");
+        StateNode firstBlock = element(answer, "figure").getNode();
+
+        answer.append("build");
+
+        assertThat(element(answer, "figure").getNode())
+                .as("the code block was replaced rather than extended")
+                .isSameAs(firstBlock);
+        assertThat(text(answer)).contains("./gradlew build");
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /** The one element with this tag inside a turn. */
+    private static Element element(MessageTurn turn, String tag) {
+        return descendants(turn.getElement())
+                .filter(element -> !element.isTextNode())
+                .filter(element -> tag.equals(element.getTag()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("This turn holds no <" + tag + ">"));
+    }
+
+    /**
+     * The one node the block still being written is drawn into.
+     *
+     * @param turn a streaming assistant turn whose tail is ordinary prose
+     * @return its single tail node
+     * @throws AssertionError when the tail is not a single text node, which is the state these tests
+     *                        are about rather than something to paper over
+     */
+    private static Element tail(MessageTurn turn) {
+        List<Element> tails = descendants(turn.getElement())
+                .filter(Element::isTextNode)
+                .filter(node -> !node.getText().isBlank())
+                .filter(node -> !"You".equals(node.getText()) && !"JavaClaw".equals(node.getText()))
+                .toList();
+        assertThat(tails).as("the answer is not being drawn as one run of text").hasSize(1);
+        return tails.getFirst();
+    }
 
     /** The accessible names of the controls this turn currently offers, in the order shown. */
     private static List<String> actions(MessageTurn turn) {

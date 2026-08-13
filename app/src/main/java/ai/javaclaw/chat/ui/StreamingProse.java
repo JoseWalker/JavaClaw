@@ -34,12 +34,19 @@ import java.util.List;
  * unsettled tail for the entire turn. Drawn as its own source, that is a screen of {@code **} runs
  * and backticks that reflows into type at the last moment.
  *
- * <p>So the tail is typeset too, with the inline half of the grammar only. That is sound for the
+ * <p>So the tail is typeset too. Mostly with the inline half of the grammar, which is sound for the
  * same reason block settling is not: no inline construct here spans a line, so a delimiter pair
  * that has closed cannot be reopened by what arrives next. The one run still being typed keeps its
  * delimiters, because until the closing one lands there is nothing to say it was emphasis. The tail
  * is re-rendered rather than appended to, which is what {@link #tail} costs and why it is bounded
  * by the settled boundary above it.
+ *
+ * <p>Two block constructs are drawn in the tail as well - a fenced block and a table - and the
+ * reason is that they are the two whose syntax is unreadable while it is half written: a delimiter
+ * row is pure punctuation, and a code fence with its source under it in the prose font is neither
+ * prose nor code. Drawing them costs nothing that settling would, because the tail is re-derived
+ * from the buffer on every token: what is drawn here is never committed to, and is redrawn as a
+ * paragraph the moment the next token says it was one. See {@link #typeset}.
  *
  * <p>Not thread safe. One instance belongs to one turn, and every call is made on the UI thread.
  */
@@ -75,8 +82,8 @@ final class StreamingProse {
      *
      * <p>Rendered fresh on every call and meant to replace whatever the tail was showing before,
      * because it is the one part of the answer a later token is still allowed to change. What comes
-     * back carries emphasis, code spans and links but no block construct: see
-     * {@link Markdown#inlineFlow} for why that line is drawn where it is.
+     * back carries emphasis, code spans and links, plus the two block constructs {@link #typeset}
+     * explains: a fenced block and a table, both redrawn from the buffer rather than committed to.
      *
      * @return detached nodes in order, empty when nothing is pending
      */
@@ -90,13 +97,29 @@ final class StreamingProse {
     }
 
     /**
-     * Typesets the pending text, holding back the runs where markup is not markup.
+     * Typesets the pending text, healing the two blocks whose syntax is unreadable half-written.
      *
-     * <p>A fence is the exception the rest of this class already knows about, and it matters twice
-     * over here: inside one, a backtick pair is an identifier a reader is being shown and a
-     * {@code **} run is two asterisks of somebody's code. So the pending text is walked line by
-     * line and switched between two treatments at the fence markers, rather than handed to the
-     * inline parser whole.
+     * <h2>Why the inline grammar alone was not enough</h2>
+     *
+     * <p>The tail used to be handed to the inline parser whole, with one exception for the inside
+     * of a fence, where a backtick pair is an identifier a reader is being shown. That left the
+     * fence line itself and every pipe of a table on screen as body prose. An audit of the running
+     * build measured a 20-row table showing raw pipes for 4.27s, the delimiter row included, and a
+     * fenced block showing {@code ```bash} above its own source set in the 15px proportional prose
+     * font with no {@code pre} in the document at all. The reference product opens the code panel
+     * on the opening fence and never renders a delimiter row.
+     *
+     * <p>Both of those are block constructs, which is why they were excluded - block structure
+     * genuinely cannot be settled from a half-written answer. But settling and typesetting are two
+     * questions, and this is the second one: the tail is re-derived from the buffer on every token,
+     * so a block drawn here is never committed to. It can be redrawn as a paragraph the moment the
+     * next token says it was one, which is exactly what the settled part cannot do.
+     *
+     * <p>So a run that a complete block grammar can read is cut out and given to {@link Markdown},
+     * and everything else stays inline flow. A fence needs no repair to be read - the parser
+     * already tolerates an unterminated one, which is what a stopped answer leaves - and a table is
+     * handed over only from the point its delimiter row is complete, which is the point it is
+     * decidably a table.
      *
      * @param text the pending run, possibly empty
      */
@@ -104,47 +127,103 @@ final class StreamingProse {
         if (text.isEmpty()) {
             return List.of();
         }
+        List<String> lines = List.of(text.split("\n", -1));
         List<Element> out = new ArrayList<>();
-        StringBuilder pending = new StringBuilder();
-        boolean pendingIsCode = false;
-        String fence = null;
+        StringBuilder prose = new StringBuilder();
+        boolean started = false;
 
-        String[] lines = text.split("\n", -1);
-        for (int i = 0; i < lines.length; i++) {
-            String marker = fenceMarker(lines[i]);
-            boolean isCode;
-            if (fence == null && marker != null) {
-                fence = marker;
-                isCode = true;
-            } else if (fence != null && fence.equals(marker)) {
-                fence = null;
-                isCode = true;
-            } else {
-                isCode = fence != null;
+        int i = 0;
+        while (i < lines.size()) {
+            String line = lines.get(i);
+            String marker = fenceMarker(line);
+            if (marker != null) {
+                flushProse(prose, out);
+                started = false;
+                i = codeRun(lines, i, marker, out);
+                continue;
             }
-            if (isCode != pendingIsCode) {
-                flush(pending, pendingIsCode, out);
-                pendingIsCode = isCode;
+            int table = Markdown.tableEnd(lines, i);
+            if (table > i) {
+                flushProse(prose, out);
+                started = false;
+                out.addAll(Markdown.render(String.join("\n", lines.subList(i, table))));
+                i = table;
+                continue;
             }
-            if (i > 0) {
-                pending.append('\n');
+            if (i == lines.size() - 1 && isTableSyntax(line)) {
+                // A delimiter row being typed. It carries no content at all - it says which way the
+                // columns line up - so there is nothing to show and a second of pipes to avoid.
+                break;
             }
-            pending.append(lines[i]);
+            if (started) {
+                prose.append('\n');
+            }
+            prose.append(line);
+            started = true;
+            i++;
         }
-        flush(pending, pendingIsCode, out);
+        flushProse(prose, out);
         return out;
     }
 
-    private static void flush(StringBuilder pending, boolean asCode, List<Element> out) {
-        if (pending.isEmpty()) {
+    /** Typesets whatever prose has accumulated and empties the buffer. */
+    private static void flushProse(StringBuilder prose, List<Element> out) {
+        if (prose.isEmpty()) {
             return;
         }
-        if (asCode) {
-            out.add(Element.createText(pending.toString()));
-        } else {
-            out.addAll(Markdown.inlineFlow(pending.toString()));
+        out.addAll(Markdown.inlineFlow(prose.toString()));
+        prose.setLength(0);
+    }
+
+    /**
+     * Draws the fenced block that opens on this line, closed or not.
+     *
+     * <p>Handed to the block parser rather than printed, so the reader gets the code panel, the
+     * monospace and the line numbering from the moment the fence arrives rather than once the
+     * closing one does - and never sees the delimiter, which is pure syntax. Inside the block
+     * nothing is markup, which the parser already guarantees and is the property the old text-node
+     * treatment was protecting.
+     *
+     * @param lines the pending lines
+     * @param start the line carrying the opening fence
+     * @param fence the marker that opened it, which is the only thing that can close it
+     * @param out   where the block is appended
+     * @return the line to continue from: past the closing fence, or the end of the pending text
+     */
+    private static int codeRun(List<String> lines, int start, String fence, List<Element> out) {
+        int end = start + 1;
+        while (end < lines.size() && !fence.equals(fenceMarker(lines.get(end)))) {
+            end++;
         }
-        pending.setLength(0);
+        int past = Math.min(end + 1, lines.size());
+        out.addAll(Markdown.render(String.join("\n", lines.subList(start, past))));
+        return past;
+    }
+
+    /**
+     * Whether a line is table syntax and nothing else.
+     *
+     * <p>Only ever asked of the last line of the tail, which is the one still being typed. A line
+     * of pipes, dashes and colons with no word in it is a delimiter row on its way to being
+     * complete: it is the one piece of markdown that is never meant to be seen, and holding it back
+     * for the moment it takes to finish costs the reader nothing. A dash is required as well as a
+     * pipe, so an empty row of cells is not swallowed by this.
+     */
+    private static boolean isTableSyntax(String line) {
+        String candidate = line.strip();
+        if (candidate.isEmpty() || candidate.indexOf('|') < 0) {
+            return false;
+        }
+        boolean shaped = false;
+        for (int i = 0; i < candidate.length(); i++) {
+            char c = candidate.charAt(i);
+            if (c == '-' || c == ':') {
+                shaped = true;
+            } else if (c != '|' && c != ' ' && c != '\t') {
+                return false;
+            }
+        }
+        return shaped;
     }
 
     /**

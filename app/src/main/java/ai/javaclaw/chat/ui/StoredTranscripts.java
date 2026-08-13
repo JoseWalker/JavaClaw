@@ -192,17 +192,66 @@ class StoredTranscripts implements ConversationTranscripts {
         }
         for (ConversationMessage.Role candidate : ConversationMessage.Role.values()) {
             if (candidate.name().equals(role)) {
-                return new TranscriptTurn(id, candidate, text.stringValue());
+                return new TranscriptTurn(id, candidate, text.stringValue(), outcomeOf(node));
             }
         }
         return null;
+    }
+
+    /**
+     * How a turn ended, according to the file.
+     *
+     * <p>Absent means spoken, which is what every turn written before this field existed is, and
+     * anything unrecognised means spoken too. That direction is deliberate: reading a strange value
+     * as a failure would draw a real answer under the failure tint and hide it from the model's
+     * history, which loses the reader something. Reading it as spoken shows what is there.
+     *
+     * @param node one entry of the file, already known to be an object
+     * @return the outcome, never null
+     */
+    private static TranscriptTurn.Outcome outcomeOf(JsonNode node) {
+        return TranscriptTurn.Outcome.FAILED.name().equals(node.path("outcome").stringValue(""))
+                ? TranscriptTurn.Outcome.FAILED
+                : TranscriptTurn.Outcome.SPOKEN;
     }
 
     // ------------------------------------------------------------------ writing
 
     @Override
     public Optional<TranscriptTurn> append(String id, ConversationMessage.Role role, String text) {
-        if (!ConversationIds.isWellFormed(id) || role == null || text == null || text.isBlank()) {
+        if (role == null || text == null || text.isBlank()) {
+            return Optional.empty();
+        }
+        return record(id, role, text, TranscriptTurn.Outcome.SPOKEN);
+    }
+
+    @Override
+    public Optional<TranscriptTurn> appendFailure(String id, FailureNotice notice) {
+        if (notice == null) {
+            return Optional.empty();
+        }
+        // The text is the notice's own sentence and can be nothing else, which is what keeps a
+        // provider's message off the page it would be read back onto.
+        return record(id, ConversationMessage.Role.ASSISTANT, notice.sentence(),
+                TranscriptTurn.Outcome.FAILED);
+    }
+
+    /**
+     * Adds one turn to a conversation's file.
+     *
+     * <p>The one place a turn is minted, so the ceiling, the id check and the "only when it is
+     * genuinely on disk" rule are applied to an answer and to a failure alike rather than in two
+     * places that can drift.
+     *
+     * @param id      conversation id, checked here and not assumed to have been checked
+     * @param role    who the turn belongs to
+     * @param text    what to record, already known to be non-blank
+     * @param outcome whether this is something that was said or something that went wrong
+     * @return the recorded turn, or empty when nothing was written
+     */
+    private Optional<TranscriptTurn> record(String id, ConversationMessage.Role role, String text,
+                                            TranscriptTurn.Outcome outcome) {
+        if (!ConversationIds.isWellFormed(id)) {
             return Optional.empty();
         }
         synchronized (lock) {
@@ -211,7 +260,7 @@ class StoredTranscripts implements ConversationTranscripts {
                 log.warn("Refused to extend conversation {} past {} turns", id, MAX_TURNS);
                 return Optional.empty();
             }
-            TranscriptTurn turn = new TranscriptTurn(newTurnId(), role, text);
+            TranscriptTurn turn = new TranscriptTurn(newTurnId(), role, text, outcome);
             List<TranscriptTurn> extended = new ArrayList<>(turns);
             extended.add(turn);
             // An unwritten turn is one the reader could be offered a regenerate button for and then
@@ -268,11 +317,15 @@ class StoredTranscripts implements ConversationTranscripts {
      */
     private boolean rewriteContext(String id, List<TranscriptTurn> surviving) {
         try {
-            if (surviving.isEmpty()) {
+            // A failed turn is this application's own notice, and telling the model it said that
+            // would put an apology it never wrote into its history - where it would be answered,
+            // summarised and referred back to. It is a record of the conversation, not part of it.
+            List<TranscriptTurn> spoken = surviving.stream().filter(turn -> !turn.failed()).toList();
+            if (spoken.isEmpty()) {
                 memory.deleteByConversationId(id);
                 return true;
             }
-            List<Message> messages = surviving.stream().map(StoredTranscripts::toMessage).toList();
+            List<Message> messages = spoken.stream().map(StoredTranscripts::toMessage).toList();
             memory.saveAll(id, messages);
             return true;
         } catch (RuntimeException e) {
@@ -313,6 +366,11 @@ class StoredTranscripts implements ConversationTranscripts {
                 node.put("id", turn.id());
                 node.put("role", turn.role().name());
                 node.put("text", turn.text());
+                // Written only for a failure, so a transcript of ordinary turns is byte-identical
+                // to the ones written before this field existed and no reader has to be migrated.
+                if (turn.failed()) {
+                    node.put("outcome", turn.outcome().name());
+                }
             }
             Path temporary = Files.createTempFile(transcriptsDir, id, ".writing");
             Files.write(temporary, json.writerWithDefaultPrettyPrinter().writeValueAsBytes(array));

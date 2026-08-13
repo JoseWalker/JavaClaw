@@ -65,6 +65,35 @@ final class Markdown {
     private static final Pattern DELIMITER_CELL = Pattern.compile(":?-+:?");
 
     /**
+     * The delimiter GFM strikes text through with, and it is two characters in every case.
+     *
+     * <p>A single tilde is a home directory, an approximation or a shell glob far more often than
+     * it is markup, so it is not a delimiter here at all.
+     */
+    private static final String STRIKE = "~~";
+
+    /**
+     * The box that opens a task-list item.
+     *
+     * <p>Anchored and space-terminated, so {@code [note] see below} stays the text it is: the
+     * bracket form appears in ordinary prose, and turning one into a control the reader cannot
+     * operate would be worse than printing it.
+     */
+    private static final Pattern TASK_BOX = Pattern.compile("^\\[([ xX])]\\s+(.*)$");
+
+    /**
+     * The schemes a URL written without brackets may carry.
+     *
+     * <p>The same three {@link #safeHref} allows an explicit link, and deliberately not a superset:
+     * a bare {@code javascript:} run in an answer is exactly the shape an injection arrives in, and
+     * autolinking is the one place where the model, rather than the reader, chose the target.
+     */
+    private static final String[] AUTOLINK_SCHEMES = {"https://", "http://", "mailto:"};
+
+    /** Punctuation that ends the sentence a URL is sitting in rather than the URL. */
+    private static final String URL_TRAILERS = ".,;:!?'\"";
+
+    /**
      * Ceiling on a table's width. A row of pipes is cheap for a model to emit and expensive to turn
      * into elements, and past this many columns nothing readable comes out anyway. Beyond it the
      * lines are not a table and fall through to the paragraph they look like.
@@ -190,6 +219,13 @@ final class Markdown {
         Matcher bullet = BULLET.matcher(stripped);
         if (bullet.matches()) {
             stripped = bullet.group(3);
+            // A task box is punctuation that exists to be drawn, and this projection is read aloud:
+            // without this a screen reader hears "left bracket x right bracket" as the opening of
+            // the conversation it is describing.
+            Matcher box = TASK_BOX.matcher(stripped);
+            if (box.matches()) {
+                stripped = box.group(2);
+            }
         }
         Matcher ordered = ORDERED.matcher(stripped);
         if (ordered.matches()) {
@@ -494,6 +530,30 @@ final class Markdown {
      * to the paragraph it is: guessing here would eat a line of prose and print it as a one-cell
      * table.
      */
+    /**
+     * Where a table starting on this line ends, for a caller that has to typeset one in the middle
+     * of text it is otherwise treating as prose.
+     *
+     * <p>Exists for {@link StreamingProse}, which needs the table's extent and not its markup: the
+     * unfinished part of an answer is drawn as flow, and the rows that have landed have to be cut
+     * out of that flow and given to this parser. Answering with an extent rather than exposing the
+     * row grammar keeps one definition of what a table is.
+     *
+     * @param lines the lines being read, never null
+     * @param at    the line a table might start on
+     * @return the line just past the table, or {@code at} when no table starts here
+     */
+    static int tableEnd(List<String> lines, int at) {
+        if (at < 0 || at >= lines.size() || !opensTable(lines, at)) {
+            return at;
+        }
+        int i = at + 2;
+        while (i < lines.size() && !tableCells(lines.get(i)).isEmpty()) {
+            i++;
+        }
+        return i;
+    }
+
     private static boolean opensTable(List<String> lines, int at) {
         if (at + 1 >= lines.size()) {
             return false;
@@ -639,17 +699,57 @@ final class Markdown {
             if (marker == null || indentOf(lines.get(i)) != indent) {
                 break;
             }
+            // A numbered step that opens with a bracket is a numbered step: GFM puts task boxes on
+            // bullets only, and reading one into an ordered list would rewrite the reader's steps.
+            Matcher box = TASK_BOX.matcher(marker.group(3));
+            boolean task = !ordered && box.matches();
+            String written = task ? box.group(2) : marker.group(3);
+
             List<String> item = new ArrayList<>();
-            item.add(marker.group(3));
+            item.add(written);
             i++;
             i = collectItemBody(lines, i, indent, item);
 
             Element entry = new Element("li");
+            if (task) {
+                // The class is a literal and the box is built here, so nothing derived from the
+                // answer reaches an attribute.
+                list.setAttribute("class", "jc-task-list");
+                entry.setAttribute("class", "jc-task");
+                entry.appendChild(taskBox(!" ".equals(box.group(1))));
+            }
             appendItemContent(entry, item, depth);
             list.appendChild(entry);
         }
         out.add(list);
         return i;
+    }
+
+    /**
+     * The box on a task-list item, in the state the answer put it in.
+     *
+     * <p>Always disabled. The transcript is a record of what was said, and a box the reader could
+     * tick would be an edit of an answer that nothing would record and nobody would act on - the
+     * checklist belongs to the model, not to the page. Being disabled is also what keeps it out of
+     * the tab order, so a long checklist does not become a screenful of stops on the way to the
+     * composer.
+     *
+     * <p>Named for assistive technology, because a checkbox is the one part of the item whose
+     * meaning is not in the text beside it: without the label a screen reader reads the state of an
+     * unnamed control, and with it the state has a subject.
+     *
+     * @param done whether the answer marked this item as done
+     */
+    private static Element taskBox(boolean done) {
+        Element box = new Element("input");
+        box.setAttribute("type", "checkbox");
+        box.setAttribute("disabled", true);
+        if (done) {
+            box.setAttribute("checked", true);
+        }
+        box.setAttribute("class", "jc-task__box");
+        box.setAttribute("aria-label", done ? "Done" : "Not done");
+        return box;
     }
 
     /** Everything that hangs under an item: its wrapped text, its nested lists, its paragraphs. */
@@ -782,6 +882,21 @@ final class Markdown {
      * closer is emitted as the character it is.
      */
     private static void inline(String text, Element parent, int depth) {
+        inline(text, parent, depth, false);
+    }
+
+    /**
+     * The same, told whether it is running inside a link.
+     *
+     * <p>The flag exists for one construct: a URL written bare becomes a link, and a bare URL
+     * inside the label of an explicit link must not, because an anchor inside an anchor is markup
+     * no browser agrees about and the label is already inside the link the model wrote. It is
+     * carried rather than derived from the parent element, because the parent of a URL inside
+     * emphasis inside a link is an {@code em}.
+     *
+     * @param inLink true when everything appended here is already inside an {@code a}
+     */
+    private static void inline(String text, Element parent, int depth, boolean inLink) {
         if (depth >= MAX_DEPTH) {
             parent.appendChild(Element.createText(text));
             return;
@@ -817,7 +932,14 @@ final class Markdown {
                 }
             }
             if (isEmphasisOpener(text, i)) {
-                int consumed = emphasis(text, i, parent, plain, depth);
+                int consumed = emphasis(text, i, parent, plain, depth, inLink);
+                if (consumed > 0) {
+                    i += consumed;
+                    continue;
+                }
+            }
+            if (c == '~') {
+                int consumed = strikethrough(text, i, parent, plain, depth, inLink);
                 if (consumed > 0) {
                     i += consumed;
                     continue;
@@ -830,10 +952,160 @@ final class Markdown {
                     continue;
                 }
             }
+            if (!inLink && opensAutolink(text, i)) {
+                int consumed = autolink(text, i, parent, plain);
+                if (consumed > 0) {
+                    i += consumed;
+                    continue;
+                }
+            }
             plain.append(c);
             i++;
         }
         flush(plain, parent);
+    }
+
+    /**
+     * Reads a run the model struck out.
+     *
+     * <p>Governed by the same closing rule as {@link #emphasis}: scanned left to right, closed by
+     * the first matching pair, and an opener with no closer is the two characters it is. The
+     * opening pair must be followed by something other than a space, so a line of tildes used as a
+     * rule does not open a strike that swallows the paragraph.
+     *
+     * <p>Worth having rather than cosmetic. Struck text is the model saying a thing is <em>not</em>
+     * so, and printed as its own tildes it reads as the affirmative claim with punctuation around
+     * it - the one inline construct whose absence inverts a sentence.
+     *
+     * @return characters consumed, or 0 when this is not a struck run
+     */
+    private static int strikethrough(String text, int at, Element parent, StringBuilder plain,
+                                     int depth, boolean inLink) {
+        if (!text.startsWith(STRIKE, at)) {
+            return 0;
+        }
+        int from = at + STRIKE.length();
+        if (from >= text.length() || Character.isWhitespace(text.charAt(from))) {
+            return 0;
+        }
+        int end = text.indexOf(STRIKE, from);
+        if (end <= from) {
+            return 0;
+        }
+        flush(plain, parent);
+        Element struck = new Element("del");
+        inline(text.substring(from, end), struck, depth + 1, inLink);
+        parent.appendChild(struck);
+        return end + STRIKE.length() - at;
+    }
+
+    /**
+     * Whether a URL written without brackets starts here.
+     *
+     * <p>The character before it has to be a boundary. Without that, the tail of an identifier or
+     * of a URL already being read - {@code xhttps://}, or the second half of one this scan has
+     * passed over - would open a link in the middle of a word.
+     */
+    private static boolean opensAutolink(String text, int at) {
+        if (at > 0 && Character.isLetterOrDigit(text.charAt(at - 1))) {
+            return false;
+        }
+        return schemeAt(text, at) != null;
+    }
+
+    /**
+     * @return the allow-listed scheme this position opens, matched without regard to case as the
+     *         syntax requires, or null when it opens none
+     */
+    private static String schemeAt(String text, int at) {
+        for (String scheme : AUTOLINK_SCHEMES) {
+            if (text.regionMatches(true, at, scheme, 0, scheme.length())) {
+                return scheme;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Turns a bare URL into the link it plainly is.
+     *
+     * <p>A model writes most of its URLs bare, because in a chat window that is what a person does,
+     * and until this existed the one thing on screen that was a link was a string to select and
+     * copy by hand.
+     *
+     * <p>Where the URL ends is the whole difficulty, and it is decided conservatively: it runs to
+     * the next space, and then the sentence's own punctuation is handed back. A trailing bracket is
+     * given back only when nothing inside the URL opened it, which is what keeps
+     * {@code https://en.wikipedia.org/wiki/Foo_(bar)} intact while
+     * {@code (see https://example.com)} does not swallow the closing bracket.
+     *
+     * <p>The target goes through the same {@link #safeHref} allow-list as an explicit link, so a
+     * scheme this UI will not navigate to is left as the text it was rather than made clickable.
+     *
+     * @return characters consumed, or 0 when what starts here is not a URL worth linking
+     */
+    private static int autolink(String text, int at, Element parent, StringBuilder plain) {
+        String scheme = schemeAt(text, at);
+        if (scheme == null) {
+            return 0;
+        }
+        int end = at;
+        while (end < text.length() && !Character.isWhitespace(text.charAt(end)) && text.charAt(end) != '<') {
+            end++;
+        }
+        end = trimSentencePunctuation(text, at, end);
+        String raw = text.substring(at, end);
+        // A scheme on its own is not a target: "https://" would become a link to nowhere.
+        if (raw.length() <= scheme.length()) {
+            return 0;
+        }
+        String href = safeHref(raw);
+        if (href == null) {
+            return 0;
+        }
+        flush(plain, parent);
+        Element link = new Element("a");
+        link.setAttribute("href", href);
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer nofollow");
+        // The label is the URL exactly as written; nothing is parsed inside it.
+        link.setText(raw);
+        parent.appendChild(link);
+        return end - at;
+    }
+
+    /**
+     * Hands back the punctuation that belongs to the sentence rather than to the URL.
+     *
+     * @param from where the URL starts
+     * @param to   where the run of non-space characters ends
+     * @return the end of the URL itself, never before {@code from}
+     */
+    private static int trimSentencePunctuation(String text, int from, int to) {
+        int end = to;
+        while (end > from) {
+            char last = text.charAt(end - 1);
+            if (URL_TRAILERS.indexOf(last) >= 0 || (last == ')' && !opensItsOwnBracket(text, from, end))) {
+                end--;
+                continue;
+            }
+            break;
+        }
+        return end;
+    }
+
+    /** Whether the bracket closing this run was opened inside it, rather than around it. */
+    private static boolean opensItsOwnBracket(String text, int from, int end) {
+        int open = 0;
+        int close = 0;
+        for (int i = from; i < end; i++) {
+            if (text.charAt(i) == '(') {
+                open++;
+            } else if (text.charAt(i) == ')') {
+                close++;
+            }
+        }
+        return open >= close;
     }
 
     /**
@@ -859,8 +1131,12 @@ final class Markdown {
         return next < text.length() && !Character.isWhitespace(text.charAt(next));
     }
 
-    /** @return characters consumed, or 0 when the run has no closing delimiter */
-    private static int emphasis(String text, int at, Element parent, StringBuilder plain, int depth) {
+    /**
+     * @param inLink whether this run is already inside a link, which its contents inherit
+     * @return characters consumed, or 0 when the run has no closing delimiter
+     */
+    private static int emphasis(String text, int at, Element parent, StringBuilder plain, int depth,
+                                boolean inLink) {
         char c = text.charAt(at);
         boolean strong = at + 1 < text.length() && text.charAt(at + 1) == c;
         String delimiter = strong ? String.valueOf(new char[]{c, c}) : String.valueOf(c);
@@ -880,7 +1156,7 @@ final class Markdown {
         }
         flush(plain, parent);
         Element emphasis = new Element(strong ? "strong" : "em");
-        inline(text.substring(from, end), emphasis, depth + 1);
+        inline(text.substring(from, end), emphasis, depth + 1, inLink);
         parent.appendChild(emphasis);
         return end + delimiter.length() - at;
     }
@@ -977,7 +1253,8 @@ final class Markdown {
         String href = safeHref(matcher.group(2));
         if (href == null) {
             // The target is not something this UI will navigate to, but the label is still the
-            // reader's text and is shown rather than dropped.
+            // reader's text and is shown rather than dropped. It is not inside a link, so a URL
+            // written in it may still become one.
             inline(matcher.group(1), parent, depth + 1);
         } else {
             Element link = new Element("a");
@@ -985,7 +1262,7 @@ final class Markdown {
             link.setAttribute("target", "_blank");
             // Denies the opened page any handle on this one, and any referrer it did not need.
             link.setAttribute("rel", "noopener noreferrer nofollow");
-            inline(matcher.group(1), link, depth + 1);
+            inline(matcher.group(1), link, depth + 1, true);
             parent.appendChild(link);
         }
         return matcher.end() - at;

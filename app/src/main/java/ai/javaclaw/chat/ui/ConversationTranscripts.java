@@ -52,6 +52,23 @@ public interface ConversationTranscripts {
     Optional<TranscriptTurn> append(String id, ConversationMessage.Role role, String text);
 
     /**
+     * Records a turn that failed, so a conversation reopened later still shows it happened.
+     *
+     * <p>Separate from {@link #append} rather than an extra argument to it, and the narrowness is
+     * the point: a failure is always the assistant's turn, its text is always one of this
+     * application's own notices, and no caller can record one that says something a provider wrote.
+     * A failed turn recorded through the ordinary path would also be carried into the model's
+     * history by the next rewind, presented as something the assistant had said.
+     *
+     * <p>Implementations must keep the failure out of whatever context the model is given.
+     *
+     * @param id     conversation id, possibly null, unknown or ill formed
+     * @param notice what the reader was told, possibly null
+     * @return the recorded turn, or empty when nothing was recorded
+     */
+    Optional<TranscriptTurn> appendFailure(String id, FailureNotice notice);
+
+    /**
      * Takes the conversation back to just before a turn, dropping that turn and everything after.
      *
      * <p>This is the whole of what regenerating and editing need, and it deliberately does both

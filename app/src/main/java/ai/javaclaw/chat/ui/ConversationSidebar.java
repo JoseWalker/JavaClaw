@@ -27,6 +27,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * The navigation column: brand, new chat, search, the conversation list and the user menu.
@@ -44,6 +46,16 @@ import java.util.function.Consumer;
  * nothing: an unlabelled generic element with an {@code aria-label} is still a generic element, so
  * the column never appeared in the landmark list a screen reader user navigates a page by, and the
  * only way to reach a conversation was to tab through everything above it.
+ *
+ * <h2>What the list costs a keyboard</h2>
+ *
+ * <p>One stop, not one per conversation. The rows are a composite widget rather than a run of
+ * unrelated controls, so exactly one of them is in the tab ring - the row the reader is in - and the
+ * arrow keys move between rows from there. Measured before that was true, on the running application
+ * with 115 stored conversations: 125 Tab presses to reach the composer, 114 of them rows, against 19
+ * for the product this is measured against. The cost grew with the reader's own history, which is the
+ * part that makes it a defect rather than a quantity: the more they had used the application, the
+ * further away everything else in it became.
  */
 class ConversationSidebar extends Nav {
 
@@ -80,6 +92,16 @@ class ConversationSidebar extends Nav {
      * This states the order the rows below are actually in, which is a fact the reader can use and
      * can check against the rows themselves; why they are in it stays available on the seam.
      */
+    /**
+     * The shape of the counter {@link ConversationTitles#forColumn} puts in front of a repeated label.
+     *
+     * <p>Anchored at the start and bounded in the digits, so it can only ever match the prefix the
+     * labelling pass writes and cannot be driven by the rest of a title. Six digits is more rows than
+     * a column could draw, and matching a bounded run rather than {@code \d+} is what keeps this off
+     * a title that happens to open with a bracketed number of its own.
+     */
+    private static final Pattern OCCURRENCE_MARKER = Pattern.compile("^\\(\\d{1,6}\\) ");
+
     private static final String SEAM_LABEL = "Ordered by name";
 
     private static final String SEAM_EXPLANATION =
@@ -97,6 +119,32 @@ class ConversationSidebar extends Nav {
 
     /** Groups the reader has folded away. Held by name, so the state survives a re-render. */
     private final Set<String> collapsedGroups = new LinkedHashSet<>();
+
+    /**
+     * The rows of the current render, in the order they are drawn.
+     *
+     * <p>Kept because the arrow keys need a sequence and the DOM is a tree: a row's neighbour is not
+     * its sibling once the column is grouped, since the last row of one folder and the first of the
+     * next sit under different parents. This is the order the reader sees, which is the order the
+     * caret has to move in.
+     *
+     * <p>Rebuilt from nothing on every render rather than patched, for the same reason the list is:
+     * a second copy of the model that is updated in place is a second copy that drifts.
+     *
+     * <p><strong>Its one invariant: this holds exactly the rows that are on screen.</strong> Every
+     * keyboard decision in this class is taken from it - which row carries the tab stop, where an
+     * arrow key goes, what End means - and each of those is wrong for a row the reader cannot see.
+     * It is kept true by {@link #addRow}, which is the only thing that appends here and does so in
+     * the same statement that puts the row in the tree, and by {@link #group}, which draws no rows
+     * at all for a folder that is folded. See {@link #ensureOneTabStop()} for what it cost when the
+     * two could disagree.
+     *
+     * <p>Deliberately not transient, unlike the collaborators above it. It holds components, which
+     * are serializable, and a session that is passivated and restored would otherwise come back with
+     * this null and throw on the first keystroke rather than on the first render, where it would at
+     * least be visible.
+     */
+    private final List<NativeButton> renderedRows = new ArrayList<>();
 
     /**
      * How many seams this render has drawn, which is what their descriptions are identified by.
@@ -321,6 +369,7 @@ class ConversationSidebar extends Nav {
      */
     private void renderList() {
         list.removeAll();
+        renderedRows.clear();
         seamsDrawn = 0;
 
         List<ConversationSummary> stored = directory.conversations();
@@ -357,7 +406,7 @@ class ConversationSidebar extends Nav {
         // thing they just created rather than hunting for it inside a group.
         if (draft != null && rows.contains(draft)) {
             rows.remove(draft);
-            list.add(row(draft, labels));
+            addRow(list, draft, labels);
         }
 
         Map<String, List<ConversationSummary>> groups = new LinkedHashMap<>();
@@ -372,18 +421,137 @@ class ConversationSidebar extends Nav {
         // and they appear then.
         if (groups.size() < 2) {
             addRows(list, rows, labels);
+        } else {
+            // A search is a request to see matches, not to remember which drawers were shut.
+            boolean forceOpen = !query.isBlank();
+            // The index is what the two halves of a disclosure are tied together with. It is a
+            // position in this render rather than anything derived from the heading, because a
+            // heading is store data and store data has no business becoming a DOM id.
+            int index = 0;
+            for (Map.Entry<String, List<ConversationSummary>> entry : groups.entrySet()) {
+                list.add(group(entry.getKey(), entry.getValue(), forceOpen, labels, index++));
+            }
+        }
+        ensureOneTabStop();
+    }
+
+    /**
+     * Guarantees the column has exactly one way in from the keyboard.
+     *
+     * <p>The stop belongs to the row the reader is in, which is the rule that makes tabbing back into
+     * the column return them where they were. It is not a rule that can stand alone: a search can
+     * hide the marked row, and so can a conversation being deleted underneath the reader, and with
+     * only that rule every remaining row would be at -1 and the whole column unreachable without a
+     * pointer. That is a worse failure than the 114 tab stops this replaces, and a silent one - there
+     * is nothing on screen to say the list has gone.
+     *
+     * <p>The first row rather than the nearest one, because with the marked row gone there is no
+     * nearest: what the reader is looking at is the top of a list that has just changed under them.
+     *
+     * <h2>Why this asks about rendered rows and not about visible ones</h2>
+     *
+     * <p>It cannot ask about visible ones. Whether a row is on screen was decided by
+     * {@code .jc-group[data-collapsed="true"] .jc-group__items {display: none}} in a stylesheet, and
+     * nothing in a component tree can read that. For a while the column drew the rows of a folded
+     * group anyway and let the stylesheet hide them, and this method - which asks only whether some
+     * row carries a non-negative tabindex - was then satisfied by a row nobody could reach. Fold the
+     * group holding the conversation you have open, a single click, and the whole list left the
+     * keyboard: the marked row kept the only tab stop and it was invisible. That is precisely the
+     * outcome the paragraph above calls worse than 114 tab stops, arrived at by a different route.
+     *
+     * <p>The answer was not a better test here. A visibility test written in Java would be a second
+     * opinion about what the stylesheet did, and the two would drift the first time either changed.
+     * So the disagreement is removed instead: a folded group contributes no rows to the tree, which
+     * makes {@link #renderedRows} and what is on screen the same set by construction, and leaves this
+     * method asking the only question it was ever able to answer.
+     *
+     * <p>Nothing is done for a column that drew no rows - every group folded, or a search that
+     * matched nothing. There is no row to carry a stop and inventing one would mean drawing a row the
+     * reader asked to be rid of. It is not a trap: group headings are ordinary buttons with ordinary
+     * tab stops, so a folded column still costs a keyboard one stop per folder and every one of them
+     * gives its rows back.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to components in the tree.
+     */
+    private void ensureOneTabStop() {
+        if (renderedRows.isEmpty()) {
             return;
         }
-
-        // A search is a request to see matches, not to remember which drawers were shut.
-        boolean forceOpen = !query.isBlank();
-        // The index is what the two halves of a disclosure are tied together with. It is a
-        // position in this render rather than anything derived from the heading, because a heading
-        // is store data and store data has no business becoming a DOM id.
-        int index = 0;
-        for (Map.Entry<String, List<ConversationSummary>> entry : groups.entrySet()) {
-            list.add(group(entry.getKey(), entry.getValue(), forceOpen, labels, index++));
+        if (renderedRows.stream().anyMatch(row -> row.getTabIndex() >= 0)) {
+            return;
         }
+        renderedRows.getFirst().setTabIndex(0);
+    }
+
+    /**
+     * Moves the caret one row along, and takes the tab stop with it.
+     *
+     * <p>The stop follows the caret so that leaving the column and coming back returns the reader to
+     * the row they were actually on rather than to the row that happened to be selected when the
+     * column was last drawn. The next render puts the stop back on the marked row, which is right:
+     * by then the reader has either chosen a row or gone somewhere else entirely.
+     *
+     * <p>Deliberately does not wrap. A list that loops has no way of telling a reader they have
+     * reached the end of their own history, and this one is several screens long.
+     *
+     * <p>Deliberately does not select, either. Arrowing is looking; Enter and Space are choosing, and
+     * a row is a button, so the browser already answers both without anything here.
+     *
+     * <p>Every row it can reach is a row on screen, because {@link #renderedRows} holds only those.
+     * That is load-bearing rather than incidental: this drops the previous row's tab stop before it
+     * asks for the new one, so a target the browser refuses to focus - which is what a hidden element
+     * is - would leave the column with no focus and no tab stop at all, from one press of End.
+     *
+     * <p>Must run on the Vaadin UI thread; Vaadin only delivers DOM events there.
+     *
+     * @param from the position of the row the keystroke came from
+     * @param step  -1 for up, 1 for down
+     */
+    private void moveCaret(int from, int step) {
+        int to = from + step;
+        if (to < 0 || to >= renderedRows.size()) {
+            return;
+        }
+        NativeButton target = renderedRows.get(to);
+        renderedRows.forEach(row -> row.setTabIndex(-1));
+        target.setTabIndex(0);
+        target.focus();
+    }
+
+    /**
+     * Answers the keys a list of rows is expected to answer.
+     *
+     * <p>The other half of the roving stop, and without it the stop is a regression: one way into a
+     * list the reader then has no way of moving through. Registered per row rather than once on the
+     * scroller because a keystroke has to be answered relative to where it came from, and the DOM
+     * event Vaadin hands back names the listener's element rather than the row the caret was on.
+     *
+     * <p>The default is prevented on all four: every one of them scrolls the column on its own, and a
+     * caret that moves one row while the list moves a screen is worse than either alone.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param row      the row being built
+     * @param position where it sits in the current render
+     */
+    private void answerArrowKeys(NativeButton row, int position) {
+        onKey(row, "ArrowDown", () -> moveCaret(position, 1));
+        onKey(row, "ArrowUp", () -> moveCaret(position, -1));
+        onKey(row, "Home", () -> moveCaret(position, -position));
+        onKey(row, "End", () -> moveCaret(position, renderedRows.size() - 1 - position));
+    }
+
+    /**
+     * One keystroke, filtered in the browser so a key this does not answer costs no round trip.
+     *
+     * @param row    the row to listen on
+     * @param key    the {@code KeyboardEvent.key} value to answer
+     * @param action what to do when it arrives
+     */
+    private static void onKey(NativeButton row, String key, Runnable action) {
+        row.getElement().addEventListener("keydown", event -> action.run())
+                .setFilter("event.key === '" + key + "'")
+                .preventDefault();
     }
 
     /**
@@ -446,6 +614,28 @@ class ConversationSidebar extends Nav {
      * away was told "collapsed" and left to work out which of the four headings had just swallowed
      * the row they were looking for.
      *
+     * <h2>A folded group is empty, not hidden</h2>
+     *
+     * <p>The rows used to be built regardless and hidden by the stylesheet, so a folded group left
+     * conversations in the tab ring and in the arrow-key sequence that no reader could see - and the
+     * server had no way of telling, because {@code display: none} is not something a component tree
+     * can read. Folding the group you had a conversation open in took the entire list off the
+     * keyboard in one click; {@link #ensureOneTabStop()} has the whole account.
+     *
+     * <p>So the decision is taken once, here, where it is already being taken for the chevron and for
+     * {@code aria-expanded}, and the rows are simply not built. Two things follow. The keyboard model
+     * is exact rather than approximately right: {@link #renderedRows} is what is on screen, so no
+     * separate rule about visibility has to be written or kept in step. And the stylesheet can no
+     * longer disagree with the server about which conversations exist - if this were ever regressed,
+     * the rows would appear in a folded group, which is a defect a reader reports in a second, rather
+     * than silently leave the column unreachable from the keyboard.
+     *
+     * <p>The count on the heading still comes from {@code items}, not from what was drawn: a folded
+     * group must go on saying how much it is holding.
+     *
+     * <p>Costs nothing to reopen. {@link #toggleGroup} re-renders the whole column anyway, which is
+     * what it did when the rows were merely being hidden.
+     *
      * @param index this group's position in the current render, which is what the ids are built
      *              from; see {@link #renderList()} for why they are not built from the name
      */
@@ -482,7 +672,9 @@ class ConversationSidebar extends Nav {
         // items would take the press away from every one of them.
         body.getElement().setAttribute("role", "group");
         body.getElement().setAttribute("aria-labelledby", headId);
-        addRows(body, items, labels);
+        if (!collapsed) {
+            addRows(body, items, labels);
+        }
 
         Div group = new Div(head, body);
         group.addClassName("jc-group");
@@ -516,6 +708,17 @@ class ConversationSidebar extends Nav {
      * <p>A draft is not part of the seam either way. It carries a badge rather than a time, and it
      * is deliberately above the rest of the list, so counting it would put the marker in front of
      * the first stored row on every empty install.
+     *
+     * <p>Reached only for a run of rows the column is actually drawing - {@link #group} does not call
+     * this for a folder that is folded - so the seam is not drawn for rows nobody can see either, and
+     * {@link #seamsDrawn} counts markers rather than groups.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param target where the rows and the marker go
+     * @param items  the conversations to draw, in the order they are to appear; may be empty, which
+     *               draws nothing at all rather than an empty marker
+     * @param labels the column's decided labels, passed through to each row
      */
     private void addRows(Div target, List<ConversationSummary> items, Map<String, String> labels) {
         boolean seamDrawn = false;
@@ -525,7 +728,7 @@ class ConversationSidebar extends Nav {
                 target.add(seam(seamsDrawn++));
                 seamDrawn = true;
             }
-            target.add(row(item, labels));
+            addRow(target, item, labels);
         }
     }
 
@@ -567,17 +770,32 @@ class ConversationSidebar extends Nav {
     }
 
     /**
-     * One conversation, as a row.
+     * One conversation, as a row, put on screen and into the keyboard model in the same act.
      *
+     * <p>It builds the row and adds it rather than returning it, and that is the point of the shape
+     * rather than a convenience. Registering a row in {@link #renderedRows} is what puts it in the
+     * tab ring and in the arrow-key sequence, so a row registered and not added is a conversation the
+     * keyboard can reach and the reader cannot - which is the defect this column had, arrived at by
+     * leaving the rows of a folded group in the tree for the stylesheet to hide. Returning the
+     * component let the two halves be written apart and drift; joined here they cannot, and the
+     * invariant on {@link #renderedRows} holds without anyone having to remember it.
+     *
+     * <p>Callers therefore decide whether a row is drawn <em>before</em> calling, never after.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to the tree.
+     *
+     * @param target  the container the row belongs in - the list itself for the draft, a group's body
+     *                for everything else; must already be part of this render's tree
      * @param summary the conversation
      * @param labels  the column's decided labels; a missing one falls back to the row's own title,
      *                so a row is never drawn nameless because the labelling disagreed about the set
      */
-    private Component row(ConversationSummary summary, Map<String, String> labels) {
+    private void addRow(Div target, ConversationSummary summary, Map<String, String> labels) {
         boolean selected = summary.id().equals(selectedId);
 
-        Span title = new Span(labels.getOrDefault(summary.id(),
-                ConversationTitles.shorten(summary.title(), TITLE_WIDTH)));
+        String label = labels.getOrDefault(summary.id(),
+                ConversationTitles.shorten(summary.title(), TITLE_WIDTH));
+        Span title = new Span(label);
         title.addClassName("jc-conv__title");
 
         // No icon in front of the title. It was the same speech bubble on every row, so it told the
@@ -587,7 +805,19 @@ class ConversationSidebar extends Nav {
         // ground, neither of which costs the title any width.
         NativeButton row = new NativeButton();
         row.addClassName("jc-conv");
+        // One stop for the whole column, on the row the reader is in, and the arrow keys to move
+        // between rows - the composite-widget pattern a long list of same-kind controls is meant to
+        // use. Measured before this, on the running application with 115 stored conversations: 125
+        // Tab presses to reach the composer, 114 of them conversation rows, against 19 for the
+        // product this is measured against. The cost grew with the reader's own history, so the more
+        // they had used the application the further away everything else was.
+        // The position this row is about to take. Read before the row joins the model so that the
+        // model and the tree can be joined in one statement at the bottom of this method.
+        int position = renderedRows.size();
+        row.setTabIndex(selected ? 0 : -1);
+        answerArrowKeys(row, position);
         row.getElement().appendChild(title.getElement());
+        announceWholeTitle(row, title, summary);
         // A row says one thing on its trailing edge, and which one it says is the difference between
         // a conversation the store holds and one it has never heard of. A draft that also showed a
         // time would be indistinguishable from a chat saved a moment ago.
@@ -609,7 +839,83 @@ class ConversationSidebar extends Nav {
         row.getElement().setAttribute("aria-current", String.valueOf(selected));
         row.setTitle(tooltip(summary));
         row.addClickListener(event -> select(summary));
-        return row;
+
+        // On screen and in the keyboard model, together, as the last thing that happens. Neither is
+        // reachable without the other, which is the whole invariant this method exists to keep.
+        target.add(row);
+        renderedRows.add(row);
+    }
+
+    /**
+     * Gives the row the whole title as its name, when the column could only draw part of one.
+     *
+     * <p>A conversation row is a control whose entire purpose is to say which conversation it opens,
+     * and it was saying whatever survived a 231px box: an audit heard "…s 8 to 25" read out for
+     * "Java Features Versions 8 to 25". The rest of the name was in the {@code title} attribute,
+     * which is a tooltip - a pointer affordance, and a <em>description</em> rather than a name, so
+     * assistive technology is entitled to skip it and a keyboard reader could not reach it at all.
+     *
+     * <p>The whole title therefore goes into the row off-screen, and the fitted label is taken out of
+     * the accessibility tree so the two are not read one after the other. {@code aria-label} was the
+     * obvious alternative and is the wrong one: it replaces everything in the control, so the row's
+     * trailing edge - the relative time, or the word "Draft" - would stop being announced, and a
+     * name that has to be rebuilt from three sources is a name that drifts from what is drawn.
+     *
+     * <p>Nothing is added when the label already is the whole title. A row the column draws in full
+     * would otherwise be read out twice.
+     *
+     * <h2>Why the occurrence marker comes with it</h2>
+     *
+     * <p>Two threads that really did open with the same words have the same title, and the column
+     * separates them with a leading "(2) " because there is nothing else honest to say about them.
+     * Replacing the drawn label with the bare title therefore threw away the only part of those rows
+     * that differed: a blind review photographed sixteen such rows, and while a sighted reader could
+     * at least count them, a screen reader read sixteen controls claiming to be the same one.
+     *
+     * <p>So the marker is carried across, verbatim rather than reworded. What is spoken and what is
+     * drawn stay the same string, which is the same reason this uses an off-screen span rather than
+     * an {@code aria-label} assembled from three sources.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to components being assembled for it.
+     *
+     * @param row     the row being built
+     * @param label   the fitted label already inside it
+     * @param summary the conversation the row stands for
+     */
+    private static void announceWholeTitle(NativeButton row, Span label, ConversationSummary summary) {
+        String drawn = label.getText();
+        String whole = summary.title() == null || summary.title().isBlank()
+                ? drawn
+                : occurrenceMarker(drawn) + summary.title().strip();
+        if (whole.equals(drawn)) {
+            return;
+        }
+        label.getElement().setAttribute("aria-hidden", "true");
+        Span spoken = new Span(whole);
+        spoken.addClassName("jc-sr-only");
+        row.getElement().appendChild(spoken.getElement());
+    }
+
+    /**
+     * The "(2) " a label opens with when the column had to number two threads that read the same.
+     *
+     * <p>Matched rather than recomputed, because the number belongs to the labelling pass that saw
+     * the whole visible set and this method sees one row. Recomputing it here would be a second
+     * opinion about which row this is, and the two would disagree the moment a search narrowed the
+     * column.
+     *
+     * <p>The pattern is anchored and bounded on both the digits and the shape, and anything that is
+     * not exactly that shape yields nothing rather than being repaired: a label is text that has
+     * passed through a model-supplied title, so the only safe thing to lift out of it is a form that
+     * was fully specified in advance. A missed marker costs one row a distinguishing prefix it never
+     * had; a mis-parsed one would announce the wrong ordinal, which is worse than announcing none.
+     *
+     * @param label the fitted label the column is drawing, never null
+     * @return the marker including its trailing space, or an empty string when there is not one
+     */
+    private static String occurrenceMarker(String label) {
+        Matcher marker = OCCURRENCE_MARKER.matcher(label);
+        return marker.lookingAt() ? marker.group() : "";
     }
 
     /**
@@ -668,14 +974,40 @@ class ConversationSidebar extends Nav {
     }
 
     private void select(ConversationSummary summary) {
+        showConversation(summary);
+        onSelect.accept(summary);
+    }
+
+    /**
+     * Marks a row as the reader's place without reporting a choice they did not make.
+     *
+     * <p>Split out from {@link #select} for the one caller that is not a click: the shell resolving
+     * a conversation out of the address bar on a reload. Reporting that through {@code onSelect}
+     * would announce a selection to a shell that is in the middle of making it, and on a phone it
+     * would close the drawer the reader has not opened yet.
+     *
+     * <p>A row the column has never heard of is accepted and drawn as a draft, which is what a chat
+     * looks like before its first exchange reaches the store.
+     *
+     * <p>Must run on the Vaadin UI thread; it rebuilds the list.
+     *
+     * @param summary the conversation to mark
+     */
+    void showConversation(ConversationSummary summary) {
         selectedId = summary.id();
         // Selecting anything else abandons an untouched draft rather than leaving a stale row that
         // no longer corresponds to where the reader is.
         if (draft != null && !draft.id().equals(selectedId)) {
             draft = null;
         }
+        // A conversation the store cannot answer for still needs a row, or the marked place would be
+        // the one place the column does not show.
+        if (draft == null && directory.find(selectedId).isEmpty()) {
+            draft = summary.source() == ConversationSummary.Source.DRAFT
+                    ? summary
+                    : unsavedConversation(selectedId);
+        }
         renderList();
-        onSelect.accept(summary);
     }
 
     /** Moves focus into the search box, for the keyboard shortcut the shell registers. */

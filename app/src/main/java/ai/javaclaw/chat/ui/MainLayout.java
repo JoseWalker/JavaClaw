@@ -13,11 +13,15 @@ import com.vaadin.flow.component.html.Header;
 import com.vaadin.flow.component.html.Main;
 import com.vaadin.flow.component.html.Span;
 import com.vaadin.flow.component.page.Page;
+import com.vaadin.flow.router.BeforeEnterEvent;
+import com.vaadin.flow.router.BeforeEnterObserver;
+import com.vaadin.flow.router.Location;
 import com.vaadin.flow.router.RouterLayout;
 import com.vaadin.flow.server.VaadinSession;
 import com.vaadin.flow.shared.Registration;
 import org.springframework.core.env.Environment;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -51,8 +55,23 @@ import java.util.Optional;
  * choosing happens. It does not own the messages. So the routed view is asked, through
  * {@link ConversationHost}, to show what was picked - and the bar's title and the marked row are
  * updated from the same event, which is what stops the heading and the transcript disagreeing.
+ *
+ * <h2>Where the reader's place is kept</h2>
+ *
+ * <p>In the address bar, which is the only place that survives a reload. It used to be kept nowhere:
+ * an audit with a full answer on screen pressed reload and came back to an empty transcript titled
+ * "New chat", because clicking a row had never changed the URL and there was nothing for the second
+ * page load to read. So the shell does both halves of that here - it reads the conversation a
+ * navigation named before the view is shown, and it writes the conversation the reader moved to back
+ * into the address afterwards.
+ *
+ * <p>Both halves belong to the shell rather than to the view for the same reason the sidebar does:
+ * the shell is what knows which conversation is open. A view that read its own route parameter would
+ * be overwritten a moment later by {@link #showRouterLayoutContent}, which hands it whatever the
+ * shell believes - so the two would have to agree, and the way that ends is with the URL and the
+ * transcript naming different threads.
  */
-public class MainLayout extends Div implements RouterLayout {
+public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver {
 
     private static final String DEFAULT_TITLE = "New chat";
 
@@ -64,8 +83,37 @@ public class MainLayout extends Div implements RouterLayout {
      */
     private static final String CONTENT_ID = "jc-main-content";
 
+    /**
+     * The conversation list, kept because an address can name a conversation nobody clicked.
+     *
+     * <p>The column reads it too, and reads it again on every render; this reference exists only so
+     * a navigation can be resolved to a real summary - with the real title, so the bar is right on
+     * the first paint rather than a redraw later.
+     */
+    private final transient ConversationDirectory directory;
+
     private final transient ConversationSidebar sidebar;
     private final Main content = new Main();
+
+    /**
+     * Everything that is not the column: the bar and the region under it.
+     *
+     * <p>Held as a field for one reason, and it is the reason {@link #writeSidebarState} explains -
+     * this is the box that goes {@code inert} while the drawer covers it. It used to be the content
+     * region alone, which is a child of this and not the whole of it, so the bar's two controls
+     * stayed reachable behind the scrim.
+     */
+    private final Div main = new Div();
+
+    /**
+     * The first tab stop, and therefore one that has to go out of play with the rest of the page.
+     *
+     * <p>It is outside {@link #main} by construction - a skip link that is not the first stop is a
+     * stop the reader has to tab past the navigation to reach - so it needs saying to separately.
+     * Left reachable, it would offer a keyboard reader a jump into a region that is inert.
+     */
+    private final Anchor skipLink = createSkipLink();
+
     private final Div scrim = new Div();
     /**
      * The name of the conversation on screen, and the page's only level-one heading.
@@ -76,7 +124,7 @@ public class MainLayout extends Div implements RouterLayout {
      */
     private final H1 title = new H1(DEFAULT_TITLE);
     /**
-     * Present tense, and deliberately so.
+     * Future tense, and deliberately so.
      *
      * <p>This line is read from configuration when the shell is laid out, and it is drawn directly
      * under the name of the thread on screen. A bare model name in that position is read as a
@@ -85,16 +133,42 @@ public class MainLayout extends Div implements RouterLayout {
      * reader who switches models mid-thread, or reloads a thread from before a switch, would be
      * told something false by chrome that never changed.
      *
+     * <p>It said "Answering with" until four independent reviews measured the same thing: the
+     * string is byte-identical on an empty chat, on a settled transcript and mid-answer, so a
+     * present-progressive verb was reporting a state it was not reading. The correction was in the
+     * element's {@code title}, which is reachable by neither keyboard nor touch - a caveat most of
+     * the people it is for cannot get at, sitting under a sentence that contradicts it.
+     *
      * <p>Recording the model on each turn is the answer to that and is the right one; until it
-     * exists, the line says only what it can check, which is what will answer the next question.
+     * exists, the line says only what it can check, which is what will answer the next question -
+     * and now says it in the tense the tooltip always used.
      */
-    private static final String MODEL_LINE_PREFIX = "Answering with ";
+    private static final String MODEL_LINE_PREFIX = "Next answer: ";
 
     private static final String MODEL_LINE_SCOPE =
             "The model configured now, which is what will answer the next question. Earlier answers "
                     + "in this conversation are not recorded with the model that wrote them.";
 
     private final Span subtitle = new Span();
+
+    /**
+     * What the shell says when the browser has lost its connection.
+     *
+     * <p>Present from the first paint and never removed, for the reason the transcript's announcer
+     * is: assistive technology reports changes to regions that already existed when the change
+     * happened, so a live region created at the moment it has something to say is the one shape of
+     * live region that cannot work. Empty until there is something to report, and hidden by the
+     * stylesheet until then, so it costs a reader on a working connection nothing at all.
+     *
+     * <p>Its text is written from the browser rather than from here, which is not a style choice: the
+     * state it describes is exactly the state in which nothing can be written from here.
+     */
+    private final Span connection = new Span();
+
+    /** The sentence {@link #connection} carries, passed to the browser so it exists in one place. */
+    private static final String OFFLINE_NOTICE =
+            "You are offline. JavaClaw cannot be reached until the connection returns.";
+
     private final Button drawerToggle = new Button();
 
     private LayoutMode mode = LayoutMode.DESKTOP;
@@ -126,6 +200,46 @@ public class MainLayout extends Div implements RouterLayout {
 
     private transient Registration resizeRegistration;
 
+    /**
+     * The address this shell has already asked the browser to show, or null before it has asked.
+     *
+     * <p>Kept so a redraw that changes nothing costs nothing. The column reports the open
+     * conversation on every render - a name arriving from the naming thread, a search box being
+     * typed into - and each of those would otherwise queue another history call carrying the address
+     * the browser is already on.
+     */
+    private String shownAddress;
+
+    /**
+     * Which conversation {@link #shownAddress} belongs to, which is what decides push from replace.
+     *
+     * <p>Not derivable from the address itself, because the address of a chat that has not been
+     * written is the empty path - the same empty path every other unwritten chat has. Two different
+     * chats can therefore sit at the same address, and the second one acquiring an address of its
+     * own is still the reader standing still rather than moving.
+     */
+    private String shownConversationId;
+
+    /**
+     * Conversations the view has reported writing, oldest first.
+     *
+     * <p>A chat becomes somewhere worth returning to when its first turn is on disk, and the view is
+     * the only party that knows the moment that happens. The column cannot be that party: it reads
+     * the agent's own store, which is written on its own schedule, and an audit measured the cost of
+     * waiting for it - a full answer on screen, forty-five seconds later, with the address still on
+     * the application root and a reload landing on an empty "New chat".
+     *
+     * <p>Bounded, and the bound is not decoration. This grows with what the reader does and nothing
+     * ever removes from it, so an unbounded set here would be a session-lifetime leak driven from
+     * outside. Losing the oldest entry costs nothing that matters: by the time a reader has opened
+     * sixty-four further conversations, the store the column reads has long since caught up and
+     * reports the row as stored on its own.
+     */
+    private final LinkedHashSet<String> written = new LinkedHashSet<>();
+
+    /** How many written conversations {@link #written} remembers before it drops its oldest. */
+    private static final int WRITTEN_REMEMBERED = 64;
+
     public MainLayout(ConversationDirectory directory, Environment environment) {
         // Opening on a new chat rather than resuming one. The shell used to drop the reader straight
         // into the shared web conversation, which was the only way to reach any history at all; now
@@ -133,6 +247,12 @@ public class MainLayout extends Div implements RouterLayout {
         // thing typed lands in the middle of a thread nobody asked to continue. Nothing is written
         // for a chat that is never spoken to, so this costs the store nothing.
         this.active = newChat();
+        // The browser is at the application root and this chat is what is drawn there, so the root
+        // entry belongs to it. Recording that here is what makes the chat's own address, when it
+        // acquires one, a replacement of the entry the reader is standing on rather than a second
+        // entry for the screen they never left.
+        this.shownConversationId = active.id();
+        this.directory = directory;
         this.sidebar = new ConversationSidebar(directory, active.id(),
                 this::onConversationSelected, this::closeSidebar);
         if (!active.title().isBlank()) {
@@ -162,12 +282,12 @@ public class MainLayout extends Div implements RouterLayout {
         // skip link they have just used - which is a skip link that skips nothing.
         content.getElement().setAttribute("tabindex", "-1");
 
-        Div main = new Div(createTopBar(), content);
+        main.add(createTopBar(), content);
         main.addClassName("jc-main");
 
         // First in the DOM, because a skip link that is not the first stop is a stop the reader has
         // to tab past the navigation to reach, which is what it exists to avoid.
-        add(createSkipLink(), sidebar, scrim, main);
+        add(skipLink, sidebar, scrim, main);
     }
 
     /**
@@ -182,7 +302,7 @@ public class MainLayout extends Div implements RouterLayout {
      * {@code /ui/#jc-main-content} is a navigation to a view that does not exist. The reader would
      * be skipped into an empty page.
      */
-    private static Component createSkipLink() {
+    private static Anchor createSkipLink() {
         Anchor link = new Anchor("#" + CONTENT_ID, "Skip to the conversation");
         link.addClassName("jc-skip-link");
         link.setRouterIgnore(true);
@@ -229,13 +349,22 @@ public class MainLayout extends Div implements RouterLayout {
         actions.addClassName("jc-topbar__actions");
 
         // The bar's band is full bleed; what is in it sits on the same measure as the transcript and
-        // the composer, so the title and the first word of every answer start on one x at every
-        // width. Without this the header missed the content column by a different amount at each
-        // breakpoint - including by 11px, which reads as a bug rather than as a decision.
+        // the composer. Without this the header missed the content column by a different amount at
+        // each breakpoint - including by 11px, which reads as a bug rather than as a decision. The
+        // order of the three is what the narrow arrangement's grid tracks are numbered against, so
+        // it is load bearing rather than incidental: see "Where the heading starts" in the sheet.
         Div inner = new Div(drawerToggle, heading, actions);
         inner.addClassNames("jc-topbar__inner", "jc-measure");
 
-        Header bar = new Header(inner);
+        connection.addClassName("jc-connection");
+        // A status rather than an alert: losing the connection is not worth interrupting a reader
+        // mid-word for, and the sentence is on screen for as long as it is true.
+        connection.getElement().setAttribute("role", "status");
+        connection.getElement().setAttribute("aria-live", "polite");
+
+        // Under the bar's own contents rather than inside them, so it spans the whole band: it is a
+        // statement about the application, not about the conversation named beside it.
+        Header bar = new Header(inner, connection);
         bar.addClassName("jc-topbar");
         return bar;
     }
@@ -259,6 +388,137 @@ public class MainLayout extends Div implements RouterLayout {
         String model = environment.getProperty("spring.ai." + provider + ".chat.options.model", "").trim();
         // Escaped rather than literal so the separator survives a build with a non-UTF-8 default.
         return Optional.of(model.isEmpty() ? name : name + " · " + model);
+    }
+
+    /**
+     * Opens whatever conversation the address bar named, before the view is shown.
+     *
+     * <p>This is the half of the fix that makes a reload land where the reader was. Vaadin fires this
+     * on the whole navigation chain before {@link #showRouterLayoutContent} runs, which is exactly the
+     * order that is needed: the shell settles what is open, and the view is then handed it through
+     * the same path a click on a row uses. Doing it the other way round - the view reading its own
+     * parameter - would have the shell overwrite it a moment later with the chat it opened on.
+     *
+     * <p>An id the store has never heard of is still honoured, because that is the ordinary state of
+     * a chat whose first exchange has not been written yet - the alternative is a reload that
+     * silently moves the reader to a different thread. An id that could not be a conversation at all
+     * is refused by {@link ConversationAddress#from(com.vaadin.flow.router.RouteParameters)} and
+     * never reaches the store; the reader then gets a new chat, which is what the plain route means.
+     *
+     * <p>A navigation naming no conversation is a new chat, because that is what the plain route
+     * draws, and since a selection now leaves a history
+     * entry behind it, the root is an entry the reader can come back to. This used to be ignored
+     * outright - correct for the one navigation that is not really one, the first page load, where
+     * the shell has just built the chat the reader is in, and wrong for every other, where it would
+     * leave a stored conversation on screen underneath a URL that says otherwise.
+     *
+     * <p>The two are told apart by what the shell is holding rather than by anything in the event,
+     * because there is nothing in the event to tell them apart by: a shell already sitting in a chat
+     * with nothing written in it is already showing what the root means, so it stays put.
+     *
+     * <p>Must run on the Vaadin UI thread; Vaadin only calls it there.
+     *
+     * @param event the navigation being entered
+     */
+    @Override
+    public void beforeEnter(BeforeEnterEvent event) {
+        Optional<ConversationSummary> named = ConversationAddress.from(event.getRouteParameters())
+                .map(id -> directory.find(id).orElseGet(() -> unwrittenChat(id)));
+        if (named.isPresent()) {
+            openFromAddress(named.get());
+            return;
+        }
+        if (inAnUnwrittenChat()) {
+            return;
+        }
+        openNewChatFromAddress();
+    }
+
+    /**
+     * Whether the reader is already in a chat that has nothing in it, which is what the root shows.
+     *
+     * <p>Read from the shell's own state rather than from the store: the store is behind by design
+     * for exactly the window this matters in, and a chat the view has reported writing is a
+     * conversation whether or not the column has noticed yet.
+     *
+     * @return true when the open conversation is a chat with no turn written for it
+     */
+    private boolean inAnUnwrittenChat() {
+        return active.source() == ConversationSummary.Source.DRAFT && !written.contains(active.id());
+    }
+
+    /**
+     * Puts the reader in a fresh chat because the address bar now names none.
+     *
+     * <p>Everything {@link #openFromAddress} does, for a conversation that does not exist yet rather
+     * than one the address named. The address is recorded without being written back: the browser is
+     * already at the root, and asking it to go there would add an entry for the page it is showing.
+     *
+     * <p>The view is told twice over - opened, then entered - because arriving at the root by
+     * pressing Back is the reader asking for a new chat as deliberately as pressing the control is,
+     * and a new chat that leaves the caret nowhere in silence is the defect that control already
+     * had to fix once.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
+    private void openNewChatFromAddress() {
+        ConversationSummary chat = newChat();
+        active = chat;
+        shownAddress = "";
+        shownConversationId = chat.id();
+        showTitle(chat.title(), chat.preview());
+        sidebar.showConversation(chat);
+        if (host != null) {
+            host.openConversation(chat);
+            host.enterNewConversation();
+        }
+    }
+
+    /**
+     * A conversation the address named and the store has no record of.
+     *
+     * <p>Not an error and not a miss: a chat is minted the moment the reader asks for one, and the
+     * store hears about it only when its first exchange is written. Between those two moments the
+     * address is valid and the store is empty, and a reload in that window has to come back to the
+     * same empty chat rather than to a different one.
+     *
+     * @param id a well-formed conversation id from the address bar
+     * @return a placeholder summary for it, marked as a draft exactly as the sidebar's own is
+     */
+    private static ConversationSummary unwrittenChat(String id) {
+        return new ConversationSummary(id, DEFAULT_TITLE, "Nothing sent yet.", "Drafts", List.of(),
+                Optional.empty(), ConversationSummary.Source.DRAFT);
+    }
+
+    /**
+     * Moves the shell onto a conversation the reader did not click, because the URL asked for it.
+     *
+     * <p>Everything a click does. The column is marked without its selection callback being fired,
+     * because that callback exists to report a choice the reader made and this is not one.
+     *
+     * <p>The view is told when there is one, and that is a repair rather than a flourish. On a cold
+     * load there is no view yet and {@link #showRouterLayoutContent} hands it {@link #active} the
+     * moment there is, which is why this used to say nothing to it. Pressing Back is not a cold
+     * load: the view is already attached and Flow does not rebuild it for a route that resolves to
+     * the same component, so nothing would hand it anything - the bar and the marked row would
+     * follow the address and the messages under them would not.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param conversation the conversation the address named
+     */
+    private void openFromAddress(ConversationSummary conversation) {
+        active = conversation;
+        // The browser is already at this address; recording it stops the first redraw from asking it
+        // to go there again, and stops a chat that arrived by address from having that address taken
+        // away before its first exchange is written. See addressOf.
+        shownAddress = ConversationAddress.of(conversation.id());
+        shownConversationId = conversation.id();
+        showTitle(conversation.title(), conversation.preview());
+        sidebar.showConversation(conversation);
+        if (host != null) {
+            host.openConversation(conversation);
+        }
     }
 
     @Override
@@ -305,6 +565,7 @@ public class MainLayout extends Div implements RouterLayout {
         Shortcut.NEW_CHAT.register(this, this::startNewChat);
         Shortcut.HELP.register(this, sidebar::showKeyboardShortcuts);
         installFocusMemory();
+        installConnectionWatch();
         // Escape belongs to whatever is on top - a dialog, a menu - before it belongs to the shell.
         // Both defaults have to be relaxed for that: a shortcut normally stops propagation and calls
         // preventDefault, and an overlay that sees either of those stops closing on Escape.
@@ -475,6 +736,71 @@ public class MainLayout extends Div implements RouterLayout {
                 """, content.getElement());
     }
 
+    /**
+     * Watches the browser's own connection, and marks the shell when it goes.
+     *
+     * <p>Offline was not a designed state anywhere in this application. An audit went offline and
+     * pressed Enter: for fourteen seconds nothing was added, the composer kept the text, the send
+     * control kept its resting treatment and the interface said nothing at all. The only signal was
+     * Vaadin's own connection indicator - a five-pixel striped band whose sentence is in the DOM and
+     * is not painted readably - so the reader's evidence that anything had happened was a key that
+     * appeared to be broken.
+     *
+     * <p>Entirely client side, and that is forced rather than preferred: the server is precisely
+     * what is unreachable while this is true, so anything that had to be decided here would be
+     * decided after the state was over. The browser's own {@code online} and {@code offline} events
+     * are what is listened for, because they are the events the platform fires and the ones a test
+     * harness taking the network away triggers.
+     *
+     * <p>Deny by default in the safe direction: the mark is written only when {@code navigator}
+     * says outright that it is offline. A browser that will not answer is treated as connected,
+     * because a false offline band on a working connection is a worse lie than a missing one - it
+     * would tell the reader their working application is broken.
+     *
+     * <p>The attribute is written on the shell rather than a class toggled, so it cannot collide
+     * with the class list Vaadin owns from the server, and it sits alongside {@code data-sidebar},
+     * which the server does own. The two never contend: Flow sends only the attributes it changed.
+     *
+     * <p>Installed once per document and guarded on a window flag, in the same shape as
+     * {@link #installFocusMemory}: the listeners are registered on {@code window}, which outlives
+     * this shell, so a re-attached shell re-points the elements the closure writes to instead of
+     * registering a second pair.
+     *
+     * <p>Must run on the Vaadin UI thread. The script it installs runs only on the browser's own
+     * event loop, and nothing on the server reads what it writes.
+     */
+    private void installConnectionWatch() {
+        getElement().executeJs("""
+                // Re-pointed on every install rather than only on the first: the listeners outlive a
+                // re-attached shell and the elements they write to do not, so a stale reference here
+                // would leave the band unwritten on exactly the shell the reader is looking at.
+                window.__jcConnectionShell = this;
+                window.__jcConnectionBand = $0;
+                window.__jcOfflineNotice = $1;
+                const mark = () => {
+                    const shell = window.__jcConnectionShell;
+                    const band = window.__jcConnectionBand;
+                    if (!shell || !shell.isConnected || !band) {
+                        return;
+                    }
+                    // Only an explicit false is offline. An undefined navigator.onLine - or one on a
+                    // browser that does not implement it - reads as connected, because claiming an
+                    // outage that is not happening is the worse of the two mistakes.
+                    const offline = navigator.onLine === false;
+                    // The attribute first, so the band is on screen before its text changes: a live
+                    // region written to while it is still display:none is a region nothing reports.
+                    shell.setAttribute('data-connection', offline ? 'offline' : 'online');
+                    band.textContent = offline ? window.__jcOfflineNotice : '';
+                };
+                if (!window.__jcConnectionWatch) {
+                    window.__jcConnectionWatch = true;
+                    window.addEventListener('online', () => mark());
+                    window.addEventListener('offline', () => mark());
+                }
+                mark();
+                """, connection.getElement(), OFFLINE_NOTICE);
+    }
+
     private void closeSidebar() {
         rememberSidebarState(false);
     }
@@ -542,9 +868,19 @@ public class MainLayout extends Div implements RouterLayout {
         }
         boolean open = isSidebarOpen();
         boolean overlays = mode.overlaysContent();
-        // A drawer that covers the content also takes it out of play: without this the Tab key walks
-        // straight past the drawer into a transcript the reader cannot see behind it.
-        content.getElement().setAttribute("inert", overlays && open);
+        // A drawer that covers the page also takes the page out of play: without this the Tab key
+        // walks straight past the drawer into things the reader cannot see behind the scrim.
+        //
+        // The whole page, and that is a repair rather than a restatement. This used to be set on the
+        // content region alone, which is the transcript and the composer - the bar above them is a
+        // sibling of that region rather than a child of it, so the drawer toggle and the theme
+        // control went on taking focus and went on being announced for the whole time the drawer was
+        // open, behind a shade that had already told the reader they were gone. The skip link is the
+        // third piece, outside both: reachable, it would offer a keyboard reader a jump into a region
+        // that is inert.
+        boolean covered = overlays && open;
+        main.getElement().setAttribute("inert", covered);
+        skipLink.getElement().setAttribute("inert", covered);
         // Behaviourally the drawer already is a modal dialog - it makes the content inert, draws a
         // scrim over it and answers Escape - and it announced none of that. A reader was moved into
         // an unnamed navigation landmark with no way to hear that the page behind it had gone away.
@@ -579,6 +915,7 @@ public class MainLayout extends Div implements RouterLayout {
     private void onConversationSelected(ConversationSummary summary) {
         active = summary;
         showTitle(summary.title(), summary.preview());
+        addressActiveConversation();
         if (host != null) {
             host.openConversation(summary);
         }
@@ -586,6 +923,106 @@ public class MainLayout extends Div implements RouterLayout {
             // On a phone the drawer is covering the thing that was just chosen.
             closeSidebar();
         }
+    }
+
+    /**
+     * Writes the open conversation into the address bar, so a reload comes back to it.
+     *
+     * <h2>Why a selection is pushed and a promotion is replaced</h2>
+     *
+     * <p>Every selection used to be replaced, on the argument that choosing a row is moving sideways
+     * within one screen rather than going anywhere. The argument is reasonable and the measurement
+     * against it is not close: {@code history.length} read 2 at load and stayed 2 after three
+     * conversations were opened in turn, so one Back landed on {@code about:blank} with an empty body
+     * - the entire application gone in one keystroke, from the control every browser puts within a
+     * thumb's reach. A history the reader can walk back through is a smaller cost than a Back button
+     * that is a trapdoor, and it is what the product this is measured against does.
+     *
+     * <p>The distinction that keeps that honest is the conversation, not the address. Moving to a
+     * different conversation is a place the reader can want back and is pushed. The same conversation
+     * acquiring an address - a chat that has just been written for the first time - is the reader
+     * standing still while the URL catches up, and pushing that would put an entry in the history for
+     * the screen they are already looking at, so Back would appear to do nothing.
+     *
+     * <p>Silent when nothing has changed, because this is reached from every redraw the column
+     * reports through and a repeated history call is a round trip that says nothing. Silent too on
+     * the first address of a session when that address is the root, which is where the browser
+     * already is. And silent when there is no session behind the UI, which is a component tree in a
+     * test rather than a browser: there is no address bar to write to and no reader to disappoint.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
+    private void addressActiveConversation() {
+        String address = addressOf(active);
+        // Read before the record is updated: whether this is a move or a promotion is a fact about
+        // where the browser was, and the browser is where it was until this method says otherwise.
+        boolean sameConversation = active.id().equals(shownConversationId);
+        boolean firstOfTheSession = shownAddress == null;
+        shownConversationId = active.id();
+        if (address.equals(shownAddress)) {
+            return;
+        }
+        shownAddress = address;
+        if (firstOfTheSession && address.isEmpty()) {
+            // The application's root, on a page that opened at the application's root. There is
+            // nothing to ask for, and asking would spend a history entry saying so.
+            return;
+        }
+        getUI().filter(ui -> ui.getSession() != null && ui.getSession().getService() != null)
+                .ifPresent(ui -> moveTo(ui, address, sameConversation));
+    }
+
+    /**
+     * Asks the browser to show an address, in whichever of the two ways this move deserves.
+     *
+     * <p>Split out so {@link #addressActiveConversation} reads as the decision it is and this reads
+     * as the one instruction it is. Both calls carry no state object: the shell reconstructs
+     * everything it needs from the address itself when the navigation comes back, and a state object
+     * would be a second copy of that to keep in step.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param ui               the UI whose page to address; must have a session and a service
+     * @param address          where to go, relative to the application's base URL
+     * @param sameConversation true when this is the conversation already on screen acquiring its own
+     *                         address, which overwrites the entry rather than adding one
+     */
+    private static void moveTo(UI ui, String address, boolean sameConversation) {
+        Location location = new Location(address);
+        if (sameConversation) {
+            ui.getPage().getHistory().replaceState(null, location);
+        } else {
+            ui.getPage().getHistory().pushState(null, location);
+        }
+    }
+
+    /**
+     * Where a conversation should be found, or the plain route when it should not be found anywhere.
+     *
+     * <p>A chat with nothing written in it does not get an address of its own. One is minted the
+     * moment a reader asks for a new chat, before they have typed anything, and addressing that would
+     * put a link to an empty thread in the address bar and in their history for a conversation that
+     * will never exist if they navigate away.
+     *
+     * <p>What counts as written is asked of {@link #written} first and of the column's row second,
+     * and that order is the fix. The column reads the agent's own store, which is written on its own
+     * schedule; the view knows the moment the turn is on disk. Waiting for the column was measured
+     * costing the reader the one conversation they are most likely to reload - the one they are in
+     * the middle of - because nothing ever asked again.
+     *
+     * <p>The other exception is a chat the browser is <em>already</em> showing the address of, which
+     * is a reload landing on a conversation whose first exchange has not been written. Taking that
+     * address away would move the reader off the place they arrived at, and put them somewhere they
+     * would have to find their way back from - a worse version of the defect this mechanism fixes.
+     *
+     * @param conversation the conversation the shell believes is open
+     * @return its address, or the empty path meaning the application's own root
+     */
+    private String addressOf(ConversationSummary conversation) {
+        String own = ConversationAddress.of(conversation.id());
+        boolean stored = conversation.source() != ConversationSummary.Source.DRAFT
+                || written.contains(conversation.id());
+        return stored || own.equals(shownAddress) ? own : "";
     }
 
     /**
@@ -626,6 +1063,11 @@ public class MainLayout extends Div implements RouterLayout {
         }
         active = current;
         showTitle(current.title(), current.preview());
+        // The moment a chat stops being a draft it acquires an address, and this is where the shell
+        // finds that out: the column reports the stored row as soon as the first exchange is on disk.
+        // Without this line the one conversation a reader is most likely to reload - the one they are
+        // in the middle of - would be the one with no address.
+        addressActiveConversation();
     }
 
     /**
@@ -637,6 +1079,58 @@ public class MainLayout extends Div implements RouterLayout {
      */
     void activeConversationUpdated() {
         sidebar.refresh();
+    }
+
+    /**
+     * Records that a conversation now has a turn on disk, and addresses it if it is the open one.
+     *
+     * <p>This is the moment a chat stops being a chat and becomes somewhere a reader can come back
+     * to, and the view is the only party that knows when it arrives. The shell used to learn it from
+     * the conversation column instead, which reads the agent's own store rather than the transcript
+     * the turn was written to - so it heard about the change on that store's schedule, or, as an
+     * audit measured, not at all: a full answer on screen, forty-five seconds later, the address
+     * still on the application root, and a reload landing on an empty "New chat" while the thread sat
+     * safely in the column below.
+     *
+     * <p>A report about any other conversation is recorded and goes no further. A turn can be filed
+     * after the reader has clicked away from the thread it belongs to - the view files it under the
+     * conversation it was asked of, deliberately - and addressing that would put the reader back
+     * somewhere they had just left.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to the address bar through the UI.
+     *
+     * @param conversationId the conversation whose first turn has been written, possibly null and
+     *                       possibly not the one on screen
+     */
+    void activeConversationStored(String conversationId) {
+        if (conversationId == null || conversationId.isBlank()) {
+            return;
+        }
+        remember(conversationId);
+        if (!conversationId.equals(active.id())) {
+            return;
+        }
+        addressActiveConversation();
+    }
+
+    /**
+     * Adds a conversation to the bounded memory of what has been written, dropping the oldest first.
+     *
+     * <p>The bound is what stops a set fed by the reader's own actions from growing for the lifetime
+     * of a session. Dropping the oldest is safe in a way dropping the newest would not be: the
+     * entries this loses are conversations from long enough ago that the store the column reads has
+     * caught up and reports them as stored without any help from here.
+     *
+     * @param conversationId the conversation to remember, already known non-blank
+     */
+    private void remember(String conversationId) {
+        if (written.contains(conversationId)) {
+            return;
+        }
+        if (written.size() >= WRITTEN_REMEMBERED) {
+            written.removeFirst();
+        }
+        written.add(conversationId);
     }
 
     /**

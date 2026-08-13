@@ -141,17 +141,106 @@ class StreamingProseTest {
         assertThat(text(prose.tail())).doesNotContain("`");
     }
 
+    /**
+     * The fence half of the healing defect, and the reason the old assertion here has been rewritten
+     * rather than deleted.
+     *
+     * <p>What this test used to pin was that the tail of an open fence is one run of plain text.
+     * That is true of its <em>contents</em> and it was being applied to the delimiter as well: an
+     * audit of the running build found {@code ```bash} on screen as a line of body prose with the
+     * snippet under it in the 15px proportional font, {@code pre} count zero, for 430ms and again
+     * for 420ms in one answer. The reference product opens the code panel on the opening fence and
+     * never renders the delimiter at all.
+     *
+     * <p>The property that mattered is kept and is asserted below: a backtick pair and a
+     * {@code **} run inside the fence are somebody's source, not markup. What changes is where
+     * they are drawn - inside a code block, which is what the model said they were.
+     *
+     * <p>Fails on the original at the first assertion: the tail was a text node carrying the
+     * literal fence line.
+     */
     @Test
-    @DisplayName("an open fence keeps its backticks: inside it they are code, not markup")
-    void leavesAnOpenFenceAsWritten() {
+    @DisplayName("an open fence is drawn as code from the fence line, not as a line of backticks")
+    void healsAnOpenFenceInTheTail() {
         StreamingProse prose = new StreamingProse();
 
         prose.absorb("Here:\n\n```java\nvar name = `x` + **y**;\n");
 
-        // The paragraph above the fence settled at the blank line, so what is left is the fence and
-        // its contents - which must arrive on screen as the characters the model typed.
-        assertThat(tags(prose.tail())).containsOnly("#text");
-        assertThat(text(prose.tail())).contains("`x` + **y**;");
+        assertThat(tags(prose.tail())).containsExactly("figure");
+        assertThat(deepTags(prose.tail())).contains("pre", "code");
+        // The delimiter is pure syntax and carries nothing the reader is meant to see.
+        assertThat(text(prose.tail())).doesNotContain("```");
+        // Inside the fence nothing is markup, which is what this test always existed to say.
+        assertThat(text(prose.tail())).contains("var name = `x` + **y**;");
+        assertThat(deepTags(prose.tail())).doesNotContain("strong", "em");
+    }
+
+    @Test
+    @DisplayName("a fence that has not named a language still opens the block it opened")
+    void healsAnOpenFenceWithNoLanguage() {
+        StreamingProse prose = new StreamingProse();
+
+        prose.absorb("```\nplain\n");
+
+        assertThat(tags(prose.tail())).containsExactly("figure");
+        assertThat(text(prose.tail())).doesNotContain("```").contains("plain");
+    }
+
+    /**
+     * The table half, and the worse of the two.
+     *
+     * <p>A delimiter row is pure syntax: {@code | :--- | :--- |} says which way the columns line up
+     * and carries no content whatsoever. Measured on the running build, a 12-row table showed its
+     * pipes as paragraph text for 1.81s and a 20-row one for 4.27s, the delimiter row included. The
+     * reference never showed a delimiter row at all.
+     *
+     * <p>Fails on the original: the tail was typeset with the inline grammar only, which has no
+     * notion of a row, so every pipe reached the screen.
+     */
+    @Test
+    @DisplayName("a table in the tail is a table, and its delimiter row is never on screen")
+    void healsATableInTheTail() {
+        StreamingProse prose = new StreamingProse();
+
+        prose.absorb("| Feature | JDK |\n| :--- | :--- |\n| Records | 16 |\n");
+
+        assertThat(deepTags(prose.tail())).contains("table", "thead", "tbody", "th", "td");
+        assertThat(text(prose.tail())).doesNotContain("|", ":---");
+        assertThat(text(prose.tail())).contains("Feature", "Records");
+    }
+
+    @Test
+    @DisplayName("a lead-in sentence above a table is still prose, and the table under it is a table")
+    void healsATableUnderItsLeadIn() {
+        StreamingProse prose = new StreamingProse();
+
+        prose.absorb("Here is what I found:\n| Feature | JDK |\n| --- | --- |\n| Records | 16 |\n");
+
+        assertThat(tags(prose.tail())).containsSubsequence("#text", "div");
+        assertThat(text(prose.tail())).contains("Here is what I found:").doesNotContain("|");
+    }
+
+    @Test
+    @DisplayName("a delimiter row still being typed is held back rather than printed as prose")
+    void holdsBackAHalfTypedDelimiterRow() {
+        StreamingProse prose = new StreamingProse();
+
+        // The header has landed and the delimiter row is two characters in. There is no table yet -
+        // the row that would prove one is incomplete - and what is on screen must not be its syntax.
+        prose.absorb("| Feature | JDK |\n| :-");
+
+        assertThat(text(prose.tail())).doesNotContain(":-");
+        assertThat(text(prose.tail())).contains("Feature");
+    }
+
+    @Test
+    @DisplayName("a row of pipes that never becomes a table is still shown as the text it is")
+    void keepsProseThatMerelyContainsPipes() {
+        StreamingProse prose = new StreamingProse();
+
+        prose.absorb("Use a | b to pipe, then read on");
+
+        assertThat(text(prose.tail())).isEqualTo("Use a | b to pipe, then read on");
     }
 
     @Test
@@ -230,6 +319,20 @@ class StreamingProseTest {
 
     private static List<String> tags(List<Element> elements) {
         return elements.stream().map(StreamingProseTest::tagOf).toList();
+    }
+
+    /** Every tag in the tail, however deep - a code block and a table are both several levels. */
+    private static List<String> deepTags(List<Element> elements) {
+        List<Element> found = new java.util.ArrayList<>();
+        elements.forEach(element -> collect(element, found));
+        return found.stream().map(StreamingProseTest::tagOf).toList();
+    }
+
+    private static void collect(Element element, List<Element> into) {
+        into.add(element);
+        if (!element.isTextNode()) {
+            element.getChildren().forEach(child -> collect(child, into));
+        }
     }
 
     /**
