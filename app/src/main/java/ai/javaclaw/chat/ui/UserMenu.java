@@ -78,16 +78,22 @@ class UserMenu extends Div {
     /**
      * Hands focus back to whatever had it before an overlay took it.
      *
-     * <p>The element is remembered by the shell, which watches focus move and keeps the last one
-     * that was not inside an overlay. Everything here is a check on that value rather than a use of
-     * it: a remembered element can have been removed from the document since, and a stored
-     * reference to something that is no longer focusable is exactly the case that produced the
-     * defect this fixes. Nothing is assumed, so nothing throws.
+     * <p>The shell owns the rule and this asks it to apply, rather than reading the remembered
+     * element and deciding here. That split is not tidiness. This used to hold its own copy of the
+     * checks, and a copy is free to fall short of the original in exactly the cases nobody drove:
+     * it did nothing at all when the memory was empty - a reader who pressed Ctrl/Cmd + / before
+     * touching anything - and nothing again when the remembered control had been removed while the
+     * dialog was open. Both left the reader on the document body, which for a keyboard-only reader
+     * means tabbing the whole page again. The shell answers both with the content landmark, and it
+     * answers them once for every overlay rather than once per overlay that remembered to ask.
+     *
+     * <p>Guarded on the function existing because this component is reachable from a shell that has
+     * not installed it yet in a test, and an overlay that throws on close is worse than one that
+     * closes without moving the caret.
      */
     private static final String RETURN_FOCUS = """
-            const target = window.__jcFocusReturn;
-            if (target && target.isConnected && typeof target.focus === 'function') {
-                target.focus();
+            if (typeof window.__jcRestoreFocus === 'function') {
+                window.__jcRestoreFocus();
             }
             """;
 
@@ -258,7 +264,17 @@ class UserMenu extends Div {
      * <p>What is restored is therefore the last element focused <em>outside</em> any overlay, which
      * the shell keeps track of. That is the trigger in the panel case and the reader's previous
      * position in the keyboard case - the same rule, stated once, giving both doors the same
-     * behaviour.
+     * behaviour. When there is no such element - nothing focused yet, or the control that opened
+     * the dialog removed while it was open - the shell falls back to the content landmark, so no
+     * exit from this dialog can end with the reader on the document body.
+     *
+     * <p>Hung on the dialog's own state rather than on any control, because there are three ways
+     * out and only one of them is a control: Escape and a click outside are the web component
+     * closing itself and telling the server afterwards. All three end in the same opened-change, so
+     * one listener is what makes the three exits behave alike; a handler on the footer button would
+     * have covered the exit a keyboard reader is least likely to use.
+     *
+     * <p>The listener runs on the Vaadin UI thread. What it queues runs on the browser's.
      *
      * @param title the dialog's heading
      * @param body  its content

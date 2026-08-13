@@ -3,14 +3,19 @@ package ai.javaclaw.chat.ui;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * What a conversation is called, and why two of them are never called the same thing.
+ * What a conversation is called, and why no two rows read the same at a glance.
  *
  * <p>The column is roughly 230px of text. A title that echoes the opening message spends all of it
  * on the scaffolding people put around a request - "explain", "in one sentence", "keep it under 150
@@ -18,11 +23,21 @@ import static org.assertj.core.api.Assertions.assertThat;
  * from another. Rows then render byte-identical and the list stops being navigable.
  *
  * <p>So the two properties pinned here are the two the reader actually needs: a title says what the
- * thread is <em>about</em>, and no two rows on screen say the same thing.
+ * thread is <em>about</em>, and no two rows on screen <em>read</em> the same.
+ *
+ * <p>The second one is deliberately not "no two labels are equal". Equality was the property this
+ * class used to promise, and it is the wrong one: twenty labels sharing a twenty-nine character
+ * opening and differing only in a trailing ordinal are all unequal, and all identical on screen. The
+ * tests below are written as properties over whole sets rather than as examples, because the defect
+ * was that the asserted property was too weak - an example would not have caught it, and would not
+ * stop it coming back.
  */
 class ConversationTitlesTest {
 
     private static final int LIMIT = 42;
+
+    /** Widths worth trying every corpus at: the floor, the sidebar's real width, and either side. */
+    private static final int[] WIDTHS = {8, 12, 24, 38, 42, 120};
 
     @Test
     @DisplayName("a request verb is scaffolding, not the subject")
@@ -156,8 +171,173 @@ class ConversationTitlesTest {
         assertThat(ConversationTitles.forColumn(List.of(), LIMIT)).isEmpty();
     }
 
+    @Test
+    @DisplayName("twenty rows sharing an opening are told apart by what differs, not by what does not")
+    void separatesTwentyRowsThatShareAnOpening() {
+        // The reported shape, exactly: a twenty-nine character opening every row has, and an ordinal
+        // at the far right that is the only thing any of them does not share. Every one of these
+        // labels used to be unequal to every other, and all twenty rendered as "How do I configure
+        // the Spring…" with the ordinal past the ellipsis.
+        String opening = "How do I configure the Spring ";
+        List<ConversationSummary> rows = IntStream.rangeClosed(1, 20)
+                .mapToObj(index -> named("web-" + index, opening + index))
+                .toList();
+
+        Map<String, String> labels = ConversationTitles.forColumn(rows, LIMIT);
+
+        assertThat(labels).hasSize(20);
+        assertDistinguishable(labels.values(), LIMIT);
+        // Not merely "somewhere in the string": the ordinal has to be inside the part of the row a
+        // reader scanning twenty of them actually sees.
+        assertThat(labels.get("web-17")).contains("17");
+        assertThat(labels.get("web-17").indexOf("17")).isLessThan(ConversationTitles.GLANCE);
+    }
+
+    @Test
+    @DisplayName("whatever the column is asked to draw, no two rows read the same at a glance")
+    void everySetIsDistinguishableAtEveryWidth() {
+        List<List<String>> corpora = List.of(
+                // The reported shape, and the same shape with the shared run one character either
+                // side of the glance - the boundary is where an off-by-one would hide.
+                ordinals("How do I configure the Spring ", 20),
+                ordinals("x".repeat(ConversationTitles.GLANCE - 1) + " ", 4),
+                ordinals("x".repeat(ConversationTitles.GLANCE) + " ", 4),
+                ordinals("x".repeat(ConversationTitles.GLANCE + 1) + " ", 4),
+                // Identical to the last character: there is nothing to expose, only somewhere to
+                // put a marker.
+                Collections.nCopies(5, "Virtual threads and the Vaadin session lock"),
+                // Differing only inside one long unbroken token, where a word boundary is no help.
+                List.of("build-000000000000001", "build-000000000000002", "build-000000000000003"),
+                // Genuinely different threads, which must come through untouched.
+                List.of("Alpha", "Beta", "Gamma"),
+                List.of("Vaadin session locking"),
+                // Shorter than the column, and one a strict prefix of the next.
+                List.of("Java 8", "Java 9", "Java 21", "Java"),
+                // Blank is not a name. A row has to be called something.
+                Arrays.asList("", "   ", "Real topic"),
+                // Longer than the column on every row, sharing everything but the last word.
+                ordinals("Compare the memory footprint of a platform thread and a virtual thread ", 6));
+
+        for (List<String> titles : corpora) {
+            for (int width : WIDTHS) {
+                Map<String, String> labels = forColumn(titles, width);
+
+                assertThat(labels).as("one label per row for %s at width %d", titles, width)
+                        .hasSize(titles.size());
+                assertDistinguishable(labels.values(), width);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("titles that differ only in a long numeric tail put the tail where it can be read")
+    void separatesALongNumericTail() {
+        // No spaces to elide at, so a whole-word elision cannot move the difference into view. The
+        // cut has to fall where the strings actually diverge.
+        List<ConversationSummary> rows = List.of(
+                named("web-1", "build-000000000000001"),
+                named("web-2", "build-000000000000002"));
+
+        Map<String, String> labels = ConversationTitles.forColumn(rows, LIMIT);
+
+        assertDistinguishable(labels.values(), LIMIT);
+        assertThat(labels.get("web-1")).isEqualTo("…1");
+        assertThat(labels.get("web-2")).isEqualTo("…2");
+    }
+
+    @Test
+    @DisplayName("a label is cut between characters, not through one")
+    void respectsCharacterBoundaries() {
+        // Surrogate pairs and combining marks are where "character count" and "what is drawn" come
+        // apart: cutting by code unit produces a lone surrogate, which the browser draws as a
+        // replacement box, or an accent orphaned onto the ellipsis. The accented row below is stored
+        // decomposed - a letter and a combining mark, two chars drawn as one character - and the
+        // ideographic row is twelve characters drawn twenty-four columns wide.
+        List<ConversationSummary> rows = List.of(
+                named("web-1", "🧵".repeat(30) + " one"),
+                named("web-2", "🧵".repeat(30) + " two"),
+                named("web-3", "é".repeat(30) + " three"),
+                named("web-4", "仕様の確認をお願いします"));
+
+        Map<String, String> labels = ConversationTitles.forColumn(rows, 38);
+
+        assertDistinguishable(labels.values(), 38);
+        assertThat(labels.values()).allSatisfy(label -> {
+            // A well-formed pair reads back as one code point above the surrogate range; only a half
+            // that lost its partner is still a surrogate here.
+            assertThat(label.codePoints().noneMatch(codePoint ->
+                    codePoint >= Character.MIN_SURROGATE && codePoint <= Character.MAX_SURROGATE))
+                    .as("no half of a surrogate pair survives the cut in %s", label).isTrue();
+            assertThat(Character.getType(label.codePointAt(0)))
+                    .as("no label begins with an orphaned combining mark: %s", label)
+                    .isNotEqualTo((int) Character.NON_SPACING_MARK);
+        });
+    }
+
+    @Test
+    @DisplayName("a row is called something even when the store had nothing to call it")
+    void namesARowWithNoTitle() {
+        Map<String, String> labels = forColumn(Arrays.asList("", "   "), LIMIT);
+
+        assertDistinguishable(labels.values(), LIMIT);
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /**
+     * The property the column depends on, asserted the way the reader experiences it.
+     *
+     * <p>Distinctness is checked over the leading {@link ConversationTitles#GLANCE} characters rather
+     * than over the whole label, because that is the part of a row that is on screen and scanned. It
+     * is computed here with a plain prefix rather than by calling back into the class under test, so
+     * the assertion cannot agree with an implementation that is wrong.
+     *
+     * @param labels the labels a column would paint
+     * @param width  the character budget those labels were asked to fit
+     */
+    private static void assertDistinguishable(Collection<String> labels, int width) {
+        assertThat(labels).allSatisfy(label -> {
+            assertThat(label).as("a blank row names nothing").isNotBlank();
+            assertThat(label.length()).as("%s overflows a %d character column", label, width)
+                    .isLessThanOrEqualTo(width);
+        });
+        assertThat(labels.stream().map(ConversationTitlesTest::atAGlance).toList())
+                .as("what a reader sees of %s", labels)
+                .doesNotHaveDuplicates();
+    }
+
+    /** The leading characters of a label: what is read before the eye moves to the next row. */
+    private static String atAGlance(String label) {
+        return label.substring(0, Math.min(ConversationTitles.GLANCE, label.length()));
+    }
+
+    /** {@code count} titles that share {@code opening} and differ only in a trailing ordinal. */
+    private static List<String> ordinals(String opening, int count) {
+        List<String> titles = new ArrayList<>();
+        for (int index = 1; index <= count; index++) {
+            titles.add(opening + index);
+        }
+        return titles;
+    }
+
+    /** Labels for these titles, one row each, taken exactly as given rather than through a topic. */
+    private static Map<String, String> forColumn(List<String> titles, int width) {
+        List<ConversationSummary> rows = new ArrayList<>();
+        for (int index = 0; index < titles.size(); index++) {
+            rows.add(named("web-" + index, titles.get(index)));
+        }
+        return ConversationTitles.forColumn(rows, width);
+    }
+
+    /** A row whose title is derived from the opening message, as the directory builds one. */
     private static ConversationSummary row(String id, String title) {
         return new ConversationSummary(id, ConversationTitles.topic(title), title, "Web", List.of(),
+                Optional.empty(), ConversationSummary.Source.STORED);
+    }
+
+    /** A row carrying exactly this title, for the cases where the topic derivation is not the subject. */
+    private static ConversationSummary named(String id, String title) {
+        return new ConversationSummary(id, title, title, "Web", List.of(),
                 Optional.empty(), ConversationSummary.Source.STORED);
     }
 }

@@ -81,6 +81,26 @@
      *
      * Reserved for that case. Using it for the hairlines between surfaces would draw a grid over an
      * interface whose whole structure is carried by tone.
+     *
+     * It had one consumer when it was introduced, and that was the defect a later audit found: the
+     * chip was fixed and every other bounded control in the sheet was left on a surface hairline, so
+     * the search field, the New chat button, the composer shell, the in-transcript editor, the jump
+     * pill, the skip link, the dialog's close, the edit controls and the streaming stop measured
+     * between 1.10:1 and 1.83:1 - all of them, in both themes. A token that passes is not a fix; the
+     * rules that draw a control's edge using it are. StylesheetClaimsTest holds the roster now, both
+     * halves of it: which rules must draw from this token, and which rules must not.
+     *
+     * The line between the two is what the criterion actually says. An edge gets this token when it
+     * is the thing that identifies a control - when there is no fill step behind it worth seeing.
+     * An edge keeps --jc-border or --jc-border-strong when it divides two surfaces, frames content
+     * (the user's bubble, a code panel, a table cell), labels rather than acts (the Draft badge, a
+     * keycap), or belongs to a component that is disabled, which 1.4.11 exempts by name. And a
+     * control identified by its own ink rather than by an edge - every row in the rail, the per-turn
+     * actions, the icon buttons - is bounded by nothing at rest and needs to stay that way.
+     *
+     * States follow the boundary rather than resetting it: --jc-text-faint is the hover and press
+     * edge throughout, because this token against the --jc-border fill a pressed control steps down
+     * to is 2.75:1 in light and 2.63:1 in dark, and --jc-text-faint is 4.29:1 and 3.89:1 there.
      */
     --jc-border-control: light-dark(#8d8880, #6f6a7c);
 
@@ -660,7 +680,14 @@ body {
     color: var(--jc-text);
     text-align: start;
     background: var(--jc-surface-raised);
-    border: 1px solid var(--jc-border);
+    /*
+     * The control token, not the surface hairline. This edge is the whole of what identifies the
+     * button: its raised fill against the rail it sits on is 1.11:1 in light and 1.39:1 in dark, so
+     * there is no fill step behind the line for a reader to fall back on. On --jc-border it measured
+     * 1.28:1 against its own fill and 1.11:1 against the rail - a boundary at the resolution of a
+     * fold in paper. It is 3.52:1 and 3.07:1 in light now, 3.13:1 and 3.66:1 in dark.
+     */
+    border: 1px solid var(--jc-border-control);
     border-radius: var(--jc-radius-m);
     box-shadow: var(--jc-shadow-xs);
     cursor: pointer;
@@ -681,15 +708,27 @@ body {
     color: var(--jc-accent);
 }
 
+/*
+ * A state may deepen a boundary; it may never give one back. Both of these used to: the hover step
+ * was --jc-border-strong at 1.36:1 against the rail and the press step was --jc-accent-line at
+ * 1.62:1 against the button's own fill, so pointing at a control that had just acquired a 3.07:1
+ * edge erased it. --jc-text-faint is the hover colour every other bounded control in this sheet
+ * already answers with (4.77:1 on the rail, 5.48:1 on the fill; 5.41:1 and 4.63:1 in dark).
+ */
 .jc-new-chat:hover {
-    border-color: var(--jc-border-strong);
+    border-color: var(--jc-text-faint);
     box-shadow: var(--jc-shadow-s);
 }
 
+/*
+ * The full accent rather than the 32% line, which is the same move .jc-starter:active makes and for
+ * the same reason: at a 1px width the tinted mix is a hue with no contrast in it. 5.81:1 on the
+ * button's fill and 5.06:1 on the rail in light, 6.68:1 and 7.80:1 in dark.
+ */
 .jc-new-chat:active {
     transform: translateY(1px);
     box-shadow: none;
-    border-color: var(--jc-accent-line);
+    border-color: var(--jc-accent);
 }
 
 .jc-search {
@@ -697,7 +736,14 @@ body {
     padding: 0;
     --vaadin-input-field-background: var(--jc-surface);
     --vaadin-input-field-border-width: 1px;
-    --vaadin-input-field-border-color: var(--jc-border);
+    /*
+     * The worst of the boundaries this sheet drew, and the reason --jc-border-control now has ten
+     * consumers instead of one. The field's fill against the column behind it is 1.10:1 in light,
+     * and its edge on --jc-border was 1.11:1 against that fill - a search field with no visible
+     * extent at all, in the column a reader navigates the product by. 3.38:1 against its own fill
+     * and 3.07:1 against the rail in light; 3.48:1 and 3.66:1 in dark.
+     */
+    --vaadin-input-field-border-color: var(--jc-border-control);
     --vaadin-input-field-border-radius: var(--jc-radius-m);
     --vaadin-input-field-height: var(--jc-control-height);
     --vaadin-input-field-hover-highlight-opacity: 0;
@@ -720,8 +766,10 @@ body {
     gap: var(--jc-space-xs);
 }
 
+/* The same step the New chat button above it takes, so the two rows answer a pointer alike: 4.77:1
+ * on the rail in light, 5.41:1 in dark, against 1.36:1 and 1.83:1 on --jc-border-strong. */
 .jc-search:hover {
-    --vaadin-input-field-border-color: var(--jc-border-strong);
+    --vaadin-input-field-border-color: var(--jc-text-faint);
 }
 
 .jc-search[focused] {
@@ -1216,7 +1264,13 @@ body {
     color: var(--jc-text);
     text-decoration: none;
     background: var(--jc-surface-raised);
-    border: 1px solid var(--jc-border-strong);
+    /*
+     * 3.52:1 on its own fill and 3.38:1 on the bar it lands over in light, 3.13:1 and 3.48:1 in
+     * dark, where --jc-border-strong was 1.56:1 and 1.50:1. This control is seen once, by a reader
+     * who has never seen it before and is being asked to trust it; a shadow is not enough of an
+     * edge for that, and it is the one control here whose first appearance is also its only one.
+     */
+    border: 1px solid var(--jc-border-control);
     border-radius: var(--jc-radius-m);
     box-shadow: var(--jc-shadow-m);
     /* Off the top by its own height and then some, so no part of it clips into the bar. */
@@ -1547,7 +1601,12 @@ body {
     font-weight: var(--jc-font-weight-medium);
     color: var(--jc-text);
     background: var(--jc-surface-raised);
-    border: 1px solid var(--jc-border-strong);
+    /*
+     * The dialog's own ground is --jc-surface-raised too, so this button's fill is 1.00:1 against
+     * what surrounds it and the edge is the entire control. On --jc-border-strong that edge was
+     * 1.56:1 in light and 1.57:1 in dark; it is 3.52:1 and 3.13:1 on the control token.
+     */
+    border: 1px solid var(--jc-border-control);
     border-radius: var(--jc-radius-m);
     cursor: pointer;
     transition: background-color var(--jc-transition-fast), border-color var(--jc-transition-fast);
@@ -1728,7 +1787,12 @@ vaadin-dialog::part(footer) {
     width: 2.25rem;
     height: 2.25rem;
     transform: translateY(-100%);
-    border: 1px solid var(--jc-border-strong);
+    /*
+     * A floating pill on the transcript ground, whose fill is 1.05:1 against it - the edge is the
+     * shape. 3.52:1 on the fill and 3.38:1 on the transcript in light, 3.13:1 and 3.48:1 in dark,
+     * where --jc-border-strong gave 1.56:1 and 1.50:1.
+     */
+    border: 1px solid var(--jc-border-control);
     border-radius: var(--jc-radius-pill);
     background: var(--jc-surface-raised);
     color: var(--jc-text-muted);
@@ -1773,10 +1837,18 @@ vaadin-dialog::part(footer) {
  * with that rather than replace it - a bare scale() here would drop the control back down onto the
  * composer for the length of the click.
  */
+/*
+ * The press fill and the press edge move together. --jc-border-control against the --jc-border fill
+ * a pressed control steps down to is 2.75:1 in light and 2.63:1 in dark - under the floor - so the
+ * edge takes the same --jc-text-faint the hover state uses, at 4.29:1 and 3.89:1 on that fill. The
+ * three controls below that press this way already did this; these two had inherited a boundary
+ * that was too soft to notice the difference.
+ */
 .jc-jump__button:active {
     transform: translateY(-100%) scale(0.94);
     box-shadow: var(--jc-shadow-xs);
     background: var(--jc-border);
+    border-color: var(--jc-text-faint);
 }
 
 /* --- Empty state ------------------------------------------------------- */
@@ -1846,7 +1918,9 @@ vaadin-dialog::part(footer) {
 }
 
 /*
- * The one control in the sheet drawn with --jc-border-control rather than a surface hairline.
+ * The first control in the sheet drawn with --jc-border-control rather than a surface hairline, and
+ * for one round the only one - see the token, where being the only one is recorded as the defect it
+ * turned out to be.
  *
  * A chip is identified by its edge - there is no fill step worth seeing behind it (raised against
  * the page ground is 1.05:1 in light and 1.09:1 in dark), so the outline is not decoration around a
@@ -2191,7 +2265,12 @@ vaadin-dialog::part(footer) {
     width: 100%;
     --vaadin-input-field-background: var(--jc-surface-raised);
     --vaadin-input-field-border-width: 1px;
-    --vaadin-input-field-border-color: var(--jc-border-strong);
+    /*
+     * A text field opened inside the transcript, over prose rather than over chrome, so its edge is
+     * the only thing saying where the editable region begins and ends. 1.56:1 on its own fill and
+     * 1.50:1 on the transcript ground before; 3.52:1 and 3.38:1 in light, 3.13:1 and 3.48:1 in dark.
+     */
+    --vaadin-input-field-border-color: var(--jc-border-control);
     --vaadin-input-field-border-radius: var(--jc-radius-m);
     --vaadin-input-field-hover-highlight-opacity: 0;
     --vaadin-input-field-value-color: var(--jc-text);
@@ -2224,7 +2303,12 @@ vaadin-dialog::part(footer) {
     margin: 0;
     padding: var(--jc-space-2xs) var(--jc-space-s);
     min-height: 1.875rem;
-    border: 1px solid var(--jc-border-strong);
+    /*
+     * The discard half of the pair, and the one that carries no fill of its own to be seen by - the
+     * accented sibling beside it is identified by its ground. 3.52:1 on its fill and 3.38:1 on the
+     * transcript in light, 3.13:1 and 3.48:1 in dark, against 1.56:1 and 1.50:1 before.
+     */
+    border: 1px solid var(--jc-border-control);
     border-radius: var(--jc-radius-m);
     background: var(--jc-surface-raised);
     font-family: inherit;
@@ -2799,7 +2883,14 @@ vaadin-dialog::part(footer) {
      * own, so this rule is the whole of the field's horizontal rhythm.
      */
     padding: var(--jc-space-xs) var(--jc-space-s);
-    border: 1px solid var(--jc-border-strong);
+    /*
+     * The largest control on the screen and, until this, the least bounded: --jc-border-strong is a
+     * division between two surfaces, and used as this shell's edge it measured 1.56:1 against the
+     * field's own fill and 1.36:1 against the band the composer sits in - 1.57:1 and 1.83:1 in dark.
+     * The fill step underneath it is 1.08:1, so nothing else was carrying the shape. On the control
+     * token the same edge is 3.52:1 and 3.07:1 in light, 3.13:1 and 3.66:1 in dark.
+     */
+    border: 1px solid var(--jc-border-control);
     border-radius: var(--jc-radius-l);
     background: var(--jc-surface-raised);
     box-shadow: var(--jc-shadow-s);
@@ -2843,9 +2934,14 @@ vaadin-dialog::part(footer) {
  * for the length of every answer only the focus ring said otherwise. It keeps the raised tone every
  * other resting field has and gives up its elevation instead: what changes while a turn streams is
  * that the control stops standing off the page, not that it stops being one.
+ *
+ * That is also why there is no border-color here any more. This rule used to step the edge down to
+ * --jc-border, which is 1.11:1 against the band, so for the length of every answer the composer had
+ * neither a fill step nor a boundary. A field locked with [readonly] is not an inactive component -
+ * it still holds focus, still shows the reader their own draft - so SC 1.4.11 still asks 3:1 of it,
+ * and it keeps the 3.52:1/3.07:1 edge the resting rule draws. Elevation is the whole of the change.
  */
 .jc-composer__field--busy {
-    border-color: var(--jc-border);
     box-shadow: none;
 }
 
@@ -3136,13 +3232,24 @@ vaadin-button.jc-send[disabled] {
  * action carrying the accent means the page's primary action and the way out of it are painted
  * identically and told apart by a 6px glyph. The accent stays with send; stop steps down to a
  * raised, outlined control - present and pressable, but no longer the loudest thing on screen.
+ *
+ * Stepping down cost it its container. This button paints --jc-surface-raised and it sits inside
+ * .jc-composer__field, which paints --jc-surface-raised: 1.00:1, a fill against an identical fill,
+ * so the ring is not decoration around a shape the reader can see - it is the only shape there is.
+ * On --jc-border-strong that ring measured 1.53:1 in light and 1.51:1 in dark against the field
+ * around it, which is to say the one control that interrupts a running answer had no visible extent
+ * while the answer it interrupts was running. The control token puts it at 3.52:1 and 3.13:1.
+ *
+ * The alternative was a fill of its own, which was rejected: a second filled circle beside the
+ * accent one is the "two primaries" this rule exists to avoid, and the fill would have to clear 3:1
+ * against the field as well - the same measurement, spent on more paint.
  */
 vaadin-button.jc-send--stop {
     background: var(--jc-surface-raised);
     color: var(--jc-text);
     --vaadin-button-background: var(--jc-surface-raised);
     --vaadin-button-text-color: var(--jc-text);
-    --vaadin-button-border: 1px solid var(--jc-border-strong);
+    --vaadin-button-border: 1px solid var(--jc-border-control);
 }
 
 vaadin-button.jc-send--stop:hover {
@@ -3152,9 +3259,16 @@ vaadin-button.jc-send--stop:hover {
     --vaadin-button-border: 1px solid var(--jc-text-faint);
 }
 
+/*
+ * The press fill and the press edge move together, the same pairing .jc-jump__button:active makes:
+ * --jc-border-control on the --jc-border fill this steps down to is 2.75:1 in light and 2.63:1 in
+ * dark, so the edge takes --jc-text-faint with it, at 4.29:1 and 3.89:1 on that fill and 5.48:1 and
+ * 4.63:1 on the composer fill outside it.
+ */
 vaadin-button.jc-send--stop:active {
     background: var(--jc-border);
     --vaadin-button-background: var(--jc-border);
+    --vaadin-button-border: 1px solid var(--jc-text-faint);
 }
 
 /* --- Quiet icon button (header) ----------------------------------------- */

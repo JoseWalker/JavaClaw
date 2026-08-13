@@ -81,6 +81,24 @@ public class ChatView extends Div implements ConversationHost {
     private static final String TRANSCRIPT_LABEL = "Conversation transcript";
 
     /**
+     * Asks the browser to say when it has actually drawn a frame.
+     *
+     * <p>Two nested animation frames rather than one, and the second is the one that carries the
+     * proof. A {@code requestAnimationFrame} callback runs immediately <em>before</em> the paint it
+     * is scheduled against, so answering from the first would be answering before the frame exists;
+     * the second only runs once the first has been painted. That is the difference between telling
+     * assistive technology the region was busy and it having been busy on screen.
+     *
+     * <p>Returned as a promise because Flow resolves one before sending the result back, which is
+     * what turns "when the browser gets round to it" into a causal answer rather than a guess at a
+     * delay.
+     */
+    private static final String PAINTED_FRAME = """
+            return new Promise(painted =>
+                    requestAnimationFrame(() => requestAnimationFrame(() => painted(true))));
+            """;
+
+    /**
      * What the polite announcer says at each end of a turn.
      *
      * <p>Short on purpose. This is read out over whatever the reader is doing, so it says what
@@ -186,6 +204,29 @@ public class ChatView extends Div implements ConversationHost {
 
     /** Both scripts survive a re-attach, so neither is installed twice on the same element. */
     private boolean copyInstalled;
+
+    /**
+     * Numbers the loads, so a quiet window can only be closed by the load that opened it.
+     *
+     * <p>Two rows clicked in quick succession put two frame confirmations in flight, and they come
+     * back in whatever order the browser answers in. Without a number to check against, the older
+     * one would unmute the region in the middle of the newer one's rebuild - the defect this
+     * mechanism exists to prevent, reintroduced by its own fix.
+     *
+     * <p>Never reset and never compared for order, only for equality with the load that is current,
+     * so wrapping after nine quintillion conversation switches would still be harmless.
+     */
+    private long transcriptLoad;
+
+    /**
+     * True while a load has muted the transcript and is still waiting on the browser to confirm it
+     * has drawn a frame.
+     *
+     * <p>Kept so {@link #onAttach} can ask again. A view detached mid-load would otherwise come
+     * back muted with nothing left in flight to release it, and a transcript that never speaks
+     * again is worse than one that speaks too much.
+     */
+    private boolean transcriptLoadPending;
 
     public ChatView(Agent agent,
                     ExecutorService responseExecutor,
@@ -392,6 +433,12 @@ public class ChatView extends Div implements ConversationHost {
         super.onAttach(attachEvent);
         installTranscriptScrollPin();
         installTranscriptCopy();
+        // A load that muted the transcript while there was no browser to hear the question has no
+        // answer coming. Asking again on attach is what stops a re-attached view from arriving
+        // muted and staying that way for the rest of the session.
+        if (transcriptLoadPending) {
+            confirmPaintedFrame(transcriptLoad);
+        }
         // The composer belongs to this view, so the keystroke that reaches it is registered here
         // rather than in the shell, which has no business knowing there is a field to reach.
         Shortcut.FOCUS_COMPOSER.register(this, prompt::focus);
@@ -653,7 +700,93 @@ public class ChatView extends Div implements ConversationHost {
      */
     private void showStoredTurns() {
         markTranscriptBusy(true);
-        showTurns(transcripts.turns(conversationId));
+        paintTurns(transcripts.turns(conversationId));
+        // Deliberately not unmuted here. See releaseWhenPainted: the muting and the release have to
+        // reach the browser in two different responses, or the browser is told neither.
+        releaseWhenPainted();
+    }
+
+    /**
+     * Lets the transcript speak again, but only once the browser has drawn it muted.
+     *
+     * <p>This is the whole of the fix for a defect that looked like a missing call and was not one.
+     * The region was muted and released around the rebuild, correctly, and a live audit still read
+     * {@code aria-busy="false"} in the DOM for the entire load. The reason is that both calls
+     * happened inside one server visit, and a visit carries one value per attribute - the last one
+     * written. Setting it to true and back to false in the same visit does not send true and then
+     * false; it sends nothing at all, because the attribute ends the visit on the value it started
+     * on. So the response that pushed four thousand characters into a polite log region told the
+     * browser nothing about them, and a screen reader read a whole conversation out because the
+     * reader glanced at it.
+     *
+     * <p>Muting is therefore left standing when the load's response goes out, and the release is
+     * put in the next one. The browser is asked to say when it has drawn a frame - two nested
+     * animation frames, because the first callback runs <em>before</em> the next paint and only the
+     * second is proof that one happened - and the release rides back on the visit that answer
+     * arrives in. The transcript is on screen the moment the load lands, so this costs the reader
+     * no latency at all; what it costs is one extra round trip that carries a single attribute.
+     *
+     * <p>An error answer releases too. A failed round trip should cost the reader the quiet window,
+     * not the region: a transcript left muted for the rest of the session would silence every
+     * answer after it, which is a worse failure than the one being prevented.
+     *
+     * <p>With no UI there is no browser to draw anything and no assistive technology to protect, so
+     * the release happens immediately. That is the path the constructor takes, and the path a test
+     * that never attaches the view takes.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
+    private void releaseWhenPainted() {
+        long load = ++transcriptLoad;
+        transcriptLoadPending = true;
+        if (getUI().isEmpty()) {
+            releaseAfter(load);
+            return;
+        }
+        confirmPaintedFrame(load);
+    }
+
+    /**
+     * Asks the browser to report back once it has painted, and releases the region when it does.
+     *
+     * <p>Split out from {@link #releaseWhenPainted()} because {@link #onAttach} has to be able to
+     * ask again: a view detached while a load was still waiting would otherwise come back muted
+     * with nothing left to release it, and a permanently silent transcript is exactly the outcome
+     * this whole mechanism exists to avoid.
+     *
+     * <p>Must run on the Vaadin UI thread, and the view must be attached.
+     *
+     * @param load the load this confirmation belongs to
+     */
+    private void confirmPaintedFrame(long load) {
+        transcript.getElement().executeJs(PAINTED_FRAME)
+                .then(painted -> releaseAfter(load), failed -> releaseAfter(load));
+    }
+
+    /**
+     * Closes the quiet window a load opened, if that load still owns it.
+     *
+     * <p>The guard is not defensive decoration. A reader who clicks two rows in quick succession
+     * has two windows in flight, and the frame the first one was waiting for arrives while the
+     * second is still loading - releasing on it would unmute the region in the middle of the
+     * second rebuild, which is the original defect reintroduced by its own fix. Only the newest
+     * load can close the window; an older one returns having done nothing, because the newer one
+     * will close it when its own frame lands.
+     *
+     * <p>Released to whatever the streaming state says rather than flat to false, for the same
+     * reason {@link #showTurns} does: a rewind redraws the transcript in the middle of a turn, and
+     * clearing it flat would unmute the region for the rest of the answer.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param load the load that opened the window, as numbered when it opened it
+     */
+    private void releaseAfter(long load) {
+        if (load != transcriptLoad) {
+            return;
+        }
+        transcriptLoadPending = false;
+        markTranscriptBusy(streaming);
     }
 
     /**
@@ -675,6 +808,28 @@ public class ChatView extends Div implements ConversationHost {
         // suppressed sixteen thousand streaming mutations is the same one; it was simply never
         // applied to the other way a transcript changes.
         markTranscriptBusy(true);
+        paintTurns(stored);
+        // Cleared to whatever the streaming state says rather than to false: a rewind redraws the
+        // transcript in the middle of a turn, and clearing it flat would unmute the region for the
+        // rest of the answer.
+        markTranscriptBusy(streaming);
+    }
+
+    /**
+     * Draws the turns, and says nothing about the region while doing it.
+     *
+     * <p>Split from {@link #showTurns} because its two callers disagree about one thing only, and
+     * it is the thing that matters here: when the region may speak again. A rewind is followed
+     * immediately by a question, so it releases within the same response and the streaming state
+     * takes over. A load has nothing following it, so it must hold the muting open until the
+     * browser has drawn a frame with it - see {@link #releaseWhenPainted()}. Keeping the drawing in
+     * one place is what stops those two policies from becoming two rebuilds that drift apart.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param stored the turns to draw, oldest first; an empty list draws the empty state
+     */
+    private void paintTurns(List<TranscriptTurn> stored) {
         transcriptInner.removeAll();
         transcriptInner.add(emptyState);
         emptyState.setVisible(stored.isEmpty());
@@ -688,10 +843,6 @@ public class ChatView extends Div implements ConversationHost {
             message.identify(turn.id());
             message.markComplete();
         }
-        // Cleared to whatever the streaming state says rather than to false: a rewind redraws the
-        // transcript in the middle of a turn, and clearing it flat would unmute the region for the
-        // rest of the answer.
-        markTranscriptBusy(streaming);
         scrollTranscriptToEnd();
     }
 

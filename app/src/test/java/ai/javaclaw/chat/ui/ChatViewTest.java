@@ -6,8 +6,12 @@ import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.ComponentUtil;
 import com.vaadin.flow.component.UI;
+import com.vaadin.flow.component.internal.PendingJavaScriptInvocation;
 import com.vaadin.flow.component.textfield.TextArea;
 import com.vaadin.flow.dom.Element;
+import com.vaadin.flow.internal.JacksonUtils;
+import com.vaadin.flow.internal.StateTree;
+import com.vaadin.flow.internal.change.MapPutChange;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -182,6 +186,73 @@ class ChatViewTest {
         // that four thousand characters of it belong to a different conversation than before.
         assertThat(byClass(view, "jc-announcer").getTextRecursively())
                 .isEqualTo("Opened A conversation");
+    }
+
+    /**
+     * The muting was there, and the browser never saw it.
+     *
+     * <p>Both calls - the one that mutes the region and the one that lets it go - happened inside
+     * a single server visit, and a visit carries one value per attribute: whatever it was set to
+     * last. So the response that pushed 4203 characters of somebody else's conversation into a
+     * polite log region carried {@code aria-busy="false"} along with them, which is the value the
+     * audit read in the DOM and the reason a screen reader read the conversation out loud.
+     *
+     * <p>The test above this one passes on exactly that code, and that is the point of writing
+     * this one. It stands inside the store read and sees a state that only ever existed on the
+     * server. What assistive technology reads is the response, so the response is what is asserted
+     * here: the value the browser is actually handed, taken from the change the server collects
+     * for the wire rather than from the field the server kept it in.
+     */
+    @Test
+    @DisplayName("the response that carries a loaded conversation carries the muting with it")
+    void aLoadIsMutedInTheResponseThatCarriesIt() {
+        FakeTranscripts transcripts = new FakeTranscripts();
+        transcripts.give("web-abc", user("How do virtual threads work?"), assistant("They unmount."));
+        UI ui = UiHarness.ui();
+        ChatView view = new ChatView(new SilentAgent(), executor, transcripts, new ConversationActivity());
+        ui.add(view);
+        Element transcript = byClass(view, "jc-transcript");
+        // The first render is not what is under test; draining it leaves only the load behind.
+        ariaBusySent(ui, transcript);
+
+        view.openConversation(summary("web-abc"));
+
+        // The turns are on screen, and the response that put them there says the region is being
+        // rewritten. Both halves matter: muting a region the reader is still waiting for would be
+        // a load that costs a round trip before anything appears.
+        assertThat(roles(view)).containsExactly("user", "assistant");
+        assertThat(ariaBusySent(ui, transcript)).isEqualTo("true");
+
+        confirmPaintedFrame(ui);
+
+        // And released once the browser has drawn a frame with the new transcript already muted,
+        // so there is no paint in which the added text sits in a region that claims to be idle.
+        assertThat(ariaBusySent(ui, transcript)).isEqualTo("false");
+    }
+
+    /**
+     * A reader who clicks two rows in quick succession has two quiet windows in flight, and the
+     * frame the first one was waiting for arrives while the second is still loading. Releasing on
+     * it would unmute the region in the middle of the second rebuild - the original defect, put
+     * back by the fix for it.
+     */
+    @Test
+    @DisplayName("a frame confirmed for the conversation just left does not unmute the one arriving")
+    void aStaleFrameDoesNotUnmuteTheNextLoad() {
+        FakeTranscripts transcripts = new FakeTranscripts();
+        transcripts.give("web-abc", user("How do virtual threads work?"));
+        transcripts.give("web-def", user("And structured concurrency?"));
+        UI ui = UiHarness.ui();
+        ChatView view = new ChatView(new SilentAgent(), executor, transcripts, new ConversationActivity());
+        ui.add(view);
+        Element transcript = byClass(view, "jc-transcript");
+
+        view.openConversation(summary("web-abc"));
+        List<PendingJavaScriptInvocation> firstFrame = pendingFrames(ui);
+        view.openConversation(summary("web-def"));
+        firstFrame.forEach(frame -> frame.complete(JacksonUtils.nullNode()));
+
+        assertThat(transcript.getAttribute("aria-busy")).isEqualTo("true");
     }
 
     // ------------------------------------------------------- while it streams
@@ -484,6 +555,71 @@ class ChatViewTest {
                 .filter(area -> "Message".equals(area.getAriaLabel().orElse("")))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("The view has no composer"));
+    }
+
+    /**
+     * The value of {@code aria-busy} the next response actually carries for an element.
+     *
+     * <p>Read from the change the server collects for the wire rather than from the element, and
+     * the difference is the whole defect this exists for: a visit that sets an attribute twice
+     * sends one value, so a region muted and unmuted inside one visit is a region the browser is
+     * only ever told is idle. Asserting the element would report the muting that the browser never
+     * receives.
+     *
+     * <p>Collecting also clears what was collected, so each call reports one response and the next
+     * call reports the one after it. A test therefore calls this once to discard the first render.
+     *
+     * @param ui      the UI whose next response to read
+     * @param element the element whose attribute to look for
+     * @return the value the response carries, or null when the response says nothing about it -
+     *         which is itself an answer, because a response that is silent leaves the browser on
+     *         whatever it had
+     */
+    private static String ariaBusySent(UI ui, Element element) {
+        StateTree tree = (StateTree) ui.getElement().getNode().getOwner();
+        tree.runExecutionsBeforeClientResponse();
+        List<String> sent = new ArrayList<>();
+        tree.collectChanges(change -> {
+            if (change instanceof MapPutChange put
+                    && change.getNode() == element.getNode()
+                    && "aria-busy".equals(put.getKey())) {
+                sent.add(String.valueOf(put.getValue()));
+            }
+        });
+        return sent.isEmpty() ? null : sent.getLast();
+    }
+
+    /**
+     * The confirmations the server is waiting on from the browser, oldest first.
+     *
+     * <p>Only the subscribed invocations: those are the ones with a handler waiting on the far
+     * side, which is what a frame confirmation is and what the view's other injected scripts are
+     * not.
+     *
+     * @param ui the UI whose queue to drain; draining empties it, so each call reports one visit
+     * @return the pending confirmations, never null and possibly empty
+     */
+    private static List<PendingJavaScriptInvocation> pendingFrames(UI ui) {
+        StateTree tree = (StateTree) ui.getElement().getNode().getOwner();
+        tree.runExecutionsBeforeClientResponse();
+        return ui.getInternals().dumpPendingJavaScriptInvocations().stream()
+                .filter(PendingJavaScriptInvocation::isSubscribed)
+                .toList();
+    }
+
+    /**
+     * Answers the server the way a browser that has drawn the frame would.
+     *
+     * @param ui the UI waiting on the confirmation
+     * @throws AssertionError when the server never asked for one, which is the state the defect
+     *                        left it in: nothing to wait for, so nothing to release
+     */
+    private static void confirmPaintedFrame(UI ui) {
+        List<PendingJavaScriptInvocation> waiting = pendingFrames(ui);
+        if (waiting.isEmpty()) {
+            throw new AssertionError("The server never asked the browser to confirm a painted frame");
+        }
+        waiting.forEach(frame -> frame.complete(JacksonUtils.nullNode()));
     }
 
     private static Element byClass(ChatView view, String className) {

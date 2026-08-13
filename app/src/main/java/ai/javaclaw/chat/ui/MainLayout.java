@@ -385,7 +385,7 @@ public class MainLayout extends Div implements RouterLayout {
     }
 
     /**
-     * Remembers where focus was before an overlay took it, for whatever has to give it back.
+     * Remembers where focus was before an overlay took it, and gives it back when one closes.
      *
      * <p>A dialog opened from the user menu used to drop focus on the body when it closed, because
      * the control that opened it - a menu item - had been destroyed along with the menu, and the
@@ -396,29 +396,83 @@ public class MainLayout extends Div implements RouterLayout {
      * an overlay returns to. It is the trigger in the menu case and the reader's previous position
      * in the keyboard case, which is the same rule stated once rather than two special cases.
      *
+     * <h2>Why the overlay is found in the composed path and not with closest()</h2>
+     *
+     * <p>The rule was right and the test for it was not, which is why the shortcuts dialog went on
+     * losing focus after this existed. A Vaadin dialog keeps its overlay in the dialog element's
+     * own shadow root, and a listener on the document is outside that shadow tree - so the browser
+     * retargets the event and hands this listener the {@code <vaadin-dialog>} host rather than the
+     * control that was focused. Asking the host for its closest overlay ancestor finds nothing,
+     * because the overlay is below it rather than above it. Every control in the dialog therefore
+     * passed the guard and was remembered as somewhere to come back to, and the memory the dialog
+     * was about to read had been overwritten by the dialog itself. Restoring it then focused an
+     * element that was on its way out, or the host element, which cannot take focus at all - and
+     * the browser resolves that by leaving the reader on the document body.
+     *
+     * <p>{@code composedPath()} crosses shadow boundaries, so it sees both ends: the element really
+     * focused at its head, and every overlay between there and the document. Any tag ending in
+     * {@code -overlay} disqualifies the whole path, which covers the dialog, the popover and
+     * anything Vaadin adds later without this having to be edited again.
+     *
+     * <h2>Why the memory starts somewhere rather than empty</h2>
+     *
+     * <p>The reader most likely to press Ctrl/Cmd + / is the one who has touched nothing yet, and
+     * with an empty memory closing the dialog restored nothing and left them on the document body.
+     * The content landmark is passed in as the starting value, so there is always somewhere to come
+     * back to - and it is passed as the element rather than as a selector, so the id cannot be
+     * renamed out from under it. The same value covers a remembered element that has since been
+     * removed from the document, which is the other way this used to end in silence.
+     *
      * <p>Installed once per document and guarded on its own flag: this shell can be re-attached,
      * and a second listener would not be wrong so much as pointless. Client-side because it is the
      * only side that knows what has focus.
+     *
+     * <p>Must run on the Vaadin UI thread. The script it installs runs only on the browser's own
+     * event loop, and nothing on the server reads what it remembers.
      */
     private void installFocusMemory() {
         getElement().executeJs("""
+                // Somewhere to come back to before the reader has been anywhere, and after a
+                // remembered control has been removed from the document. Written on every install
+                // rather than only on the first: the listener outlives a re-attached shell, and the
+                // landmark it points at does not, so a stale one would fail the same isConnected
+                // check the remembered element just failed and leave the reader nowhere again.
+                window.__jcFocusFallback = $0;
                 if (window.__jcFocusMemory) {
                     return;
                 }
                 window.__jcFocusMemory = true;
+                // An overlay in a shadow root retargets the event to its host, so the path is what
+                // has to be searched - the target alone is the host, and a host has no overlay
+                // above it to find.
+                const inOverlay = (path) => path.some((node) => typeof node.localName === 'string'
+                        && node.localName.endsWith('-overlay'));
                 // Capture phase: focusin bubbles, but an overlay's own handlers may stop it.
                 document.addEventListener('focusin', (event) => {
-                    const target = event.target;
-                    if (!(target instanceof HTMLElement) || typeof target.focus !== 'function') {
+                    const path = typeof event.composedPath === 'function'
+                            ? event.composedPath()
+                            : [event.target];
+                    // Anything inside an overlay is where focus is going, not where it came from.
+                    if (inOverlay(path)) {
                         return;
                     }
-                    // Anything inside an overlay is where focus is going, not where it came from.
-                    if (target.closest('vaadin-dialog-overlay, vaadin-popover-overlay')) {
+                    const target = path[0];
+                    if (!(target instanceof HTMLElement) || typeof target.focus !== 'function') {
                         return;
                     }
                     window.__jcFocusReturn = target;
                 }, true);
-                """);
+                // The one way back, so an overlay that closes does not get to invent its own.
+                window.__jcRestoreFocus = () => {
+                    const remembered = window.__jcFocusReturn;
+                    const target = remembered && remembered.isConnected
+                            ? remembered
+                            : window.__jcFocusFallback;
+                    if (target && target.isConnected && typeof target.focus === 'function') {
+                        target.focus();
+                    }
+                };
+                """, content.getElement());
     }
 
     private void closeSidebar() {

@@ -7,6 +7,7 @@ import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.ComponentUtil;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.dialog.Dialog;
+import com.vaadin.flow.component.internal.PendingJavaScriptInvocation;
 import com.vaadin.flow.dom.Element;
 import com.vaadin.flow.internal.StateTree;
 import org.jsoup.Jsoup;
@@ -15,6 +16,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -338,16 +340,74 @@ class KeyboardAccessTest {
         // is drained before looking for it - and drained again below, so the only scripts read
         // after the close are the ones the close produced.
         scripts(ui);
-        Dialog help = ui.getChildren()
-                .filter(Dialog.class::isInstance)
-                .map(Dialog.class::cast)
-                .findFirst()
-                .orElseThrow(() -> new AssertionError("Ctrl + / opened no dialog"));
-        assertThat(help.isOpened()).isTrue();
 
-        help.close();
+        openShortcuts(ui).close();
 
-        assertThat(String.join("\n", scripts(ui))).contains("__jcFocusReturn");
+        // Through the shell's mechanism rather than through a copy of it. A dialog that reads the
+        // remembered element itself has to repeat every check the shell already makes, and the two
+        // copies are then free to disagree about what happens when there is nothing remembered -
+        // which is the case that dropped the reader on the document body.
+        assertThat(String.join("\n", scripts(ui))).contains("__jcRestoreFocus");
+    }
+
+    /**
+     * Three ways out of the dialog, and the audit found the reader on {@code document.body} after
+     * it. Escape and a click on the scrim both arrive at the server as the web component reporting
+     * that it closed; the footer control closes it here. If the restore hung off any one of those
+     * rather than off the dialog's own state, two of the three exits would be silent about focus
+     * and a keyboard-only reader would be back at the top of the page for the rest of the session.
+     */
+    @Test
+    @DisplayName("every way out of the shortcuts dialog hands focus back")
+    void everyDismissalOfTheShortcutsDialogRestoresFocus() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(), new MockEnvironment());
+        ui.add(shell);
+
+        // The footer control.
+        UiHarness.press(ui.getElement(), "Slash");
+        scripts(ui);
+        Dialog byButton = openShortcuts(ui);
+        click(closeControl(byButton));
+        assertThat(byButton.isOpened()).isFalse();
+        assertThat(String.join("\n", scripts(ui))).contains("__jcRestoreFocus");
+
+        // Escape, and a click outside: the web component closes itself and reports it, which is the
+        // same opened-change this listens on.
+        UiHarness.press(ui.getElement(), "Slash");
+        scripts(ui);
+        Dialog byEscape = openShortcuts(ui);
+        dismissFromTheBrowser(byEscape);
+        assertThat(byEscape.isOpened()).isFalse();
+        assertThat(String.join("\n", scripts(ui))).contains("__jcRestoreFocus");
+    }
+
+    /**
+     * The reader who has touched nothing yet is the reader most likely to press Ctrl/Cmd + / -
+     * they are looking for the keys because they have not started. Nothing had been focused, so
+     * nothing was remembered, so closing the dialog restored nothing and left them on the document
+     * body: the one entry point whose whole audience is keyboard-only was the one that stranded
+     * them. The memory therefore starts pointed at the content landmark rather than at nothing, so
+     * there is always somewhere to come back to.
+     */
+    @Test
+    @DisplayName("the focus memory has somewhere to return to before the reader has been anywhere")
+    void theFocusMemoryStartsAtTheContent() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(), new MockEnvironment());
+        ui.add(shell);
+        Element content = byId(shell.getElement(), "jc-main-content");
+
+        List<Element> seeded = invocations(ui).stream()
+                .filter(pending -> pending.getInvocation().getExpression().contains("__jcFocusMemory"))
+                .flatMap(pending -> pending.getInvocation().getParameters().stream())
+                .filter(Element.class::isInstance)
+                .map(Element.class::cast)
+                .toList();
+
+        // The element itself, not a selector: a selector would be a second place for the landmark's
+        // id to be written down, and the one that nothing checks.
+        assertThat(seeded).contains(content);
     }
 
     // ------------------------------------------------------------------ the transcript
@@ -471,6 +531,75 @@ class KeyboardAccessTest {
         return ui.getInternals().dumpPendingJavaScriptInvocations().stream()
                 .map(pending -> pending.getInvocation().getExpression())
                 .toList();
+    }
+
+    /**
+     * The scripts the server has queued, as invocations rather than as text.
+     *
+     * <p>The text alone cannot answer which element a script was handed, and an element handed to a
+     * script is the only kind of reference that cannot go stale against a renamed id.
+     *
+     * @param ui the UI whose queue to drain; draining it empties it
+     * @return one entry per queued script, in the order they will run
+     */
+    private static List<PendingJavaScriptInvocation> invocations(UI ui) {
+        ((StateTree) ui.getElement().getNode().getOwner()).runExecutionsBeforeClientResponse();
+        return ui.getInternals().dumpPendingJavaScriptInvocations();
+    }
+
+    /**
+     * The shortcuts dialog the shell has just been asked to open.
+     *
+     * @param ui the UI the dialog added itself to
+     * @return the open dialog
+     * @throws AssertionError when no dialog was opened, or when the one found is already closed
+     */
+    private static Dialog openShortcuts(UI ui) {
+        Dialog help = ui.getChildren()
+                .filter(Dialog.class::isInstance)
+                .map(Dialog.class::cast)
+                .filter(Dialog::isOpened)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Ctrl + / opened no dialog"));
+        assertThat(help.isOpened()).isTrue();
+        return help;
+    }
+
+    /**
+     * Closes a dialog the way Escape and a click on the scrim close it.
+     *
+     * <p>Neither of those reaches the server as a call to {@code close()}. The web component closes
+     * itself and reports it afterwards, through the one callable Vaadin publishes for the purpose -
+     * so that callable is what is invoked here. Driving the server method instead would assert that
+     * a route the reader never takes works, and leave the two they do take untested.
+     *
+     * @param dialog the open dialog to dismiss
+     * @throws AssertionError when Vaadin no longer publishes that callable, which would mean this
+     *                        test is no longer simulating anything real
+     */
+    private static void dismissFromTheBrowser(Dialog dialog) {
+        try {
+            Method reportedByTheClient = Dialog.class.getDeclaredMethod("handleClientClose");
+            reportedByTheClient.setAccessible(true);
+            reportedByTheClient.invoke(dialog);
+        } catch (ReflectiveOperationException | RuntimeException failed) {
+            throw new AssertionError("Vaadin no longer closes a dialog from the client this way", failed);
+        }
+    }
+
+    /**
+     * The dialog's own way out, which lives in its footer rather than among its children.
+     *
+     * @param dialog the dialog to look in
+     * @return the footer control that closes it
+     * @throws AssertionError when the dialog offers no such control, which would leave a pointer
+     *                        user with nothing but the scrim
+     */
+    private static Element closeControl(Dialog dialog) {
+        return descendants(dialog.getFooter().getElement())
+                .filter(element -> element.getClassList().contains("jc-dialog__close"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("The dialog has no close control"));
     }
 
     private static List<String> rows(Component help) {

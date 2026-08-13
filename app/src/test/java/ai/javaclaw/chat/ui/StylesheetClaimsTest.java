@@ -177,6 +177,202 @@ class StylesheetClaimsTest {
         assertThat(chip).doesNotContain("--jc-border-strong");
     }
 
+    /**
+     * A control whose own edge is the thing that identifies it, and every ground that edge lands on.
+     *
+     * <p>Both sides are named because a 1px line is read against what is inside it and against what
+     * is outside it, and one token can clear 3:1 on one side while failing on the other:
+     * --jc-border-strong measured 1.56:1 against the composer's own fill and 1.36:1 against the band
+     * the composer sits in. Naming only the fill would have passed a boundary the rail swallows.
+     *
+     * @param selector the rule the boundary is declared in, written as it appears in the sheet
+     * @param grounds  the surface tokens, without their --jc- prefix, the edge is read against
+     */
+    private record BoundedControl(String selector, List<String> grounds) {
+    }
+
+    /**
+     * Every rest state in the sheet where an edge is what says "this is a control".
+     *
+     * <p>The roster is spelled out rather than scraped, and what is absent from it is the half of
+     * SC 1.4.11 that is easy to get wrong in the other direction. A conversation row, a folder
+     * heading, a menu item, a per-turn action, the code panel's copy control and the shell's icon
+     * buttons are all missing on purpose: none of them is bounded at rest, each is identified by its
+     * own ink, and every one of those inks already clears AA on the ground it lands on. Promoting
+     * their hover plates to a 3:1 edge would draw a grid of boxes over an interface whose structure
+     * is carried by tone - and 1.4.11 does not ask for it, because nothing there is needed to
+     * identify the control.
+     *
+     * <p>Equally absent: the hairlines between two surfaces, the "Draft" badge whose meaning is the
+     * word inside it, the user's own bubble, and the send button while it is disabled - an inactive
+     * component, which the success criterion exempts by name.
+     */
+    private static final List<BoundedControl> BOUNDED_CONTROLS = List.of(
+            new BoundedControl(".jc-new-chat {", List.of("surface-raised", "surface-sunken")),
+            new BoundedControl(".jc-search {", List.of("surface", "surface-sunken")),
+            new BoundedControl(".jc-composer__field {", List.of("surface-raised", "surface-sunken")),
+            new BoundedControl(".jc-message__editor {", List.of("surface-raised", "surface")),
+            new BoundedControl(".jc-starter {", List.of("surface")),
+            new BoundedControl(".jc-jump__button {", List.of("surface-raised", "surface")),
+            new BoundedControl(".jc-skip-link {", List.of("surface-raised", "surface")),
+            new BoundedControl(".jc-dialog__close {", List.of("surface-raised")),
+            new BoundedControl(".jc-edit-button {", List.of("surface-raised", "surface")),
+            new BoundedControl("vaadin-button.jc-send--stop {", List.of("surface-raised")));
+
+    /**
+     * The same claim for the states those controls move through, with the ground each state paints.
+     *
+     * <p>A boundary is not something a control has once. Every rule here changes either the edge or
+     * the fill under it, so each one is a fresh pair to measure - and the pair that this round
+     * actually failed on was a press: --jc-border-control against the --jc-border fill a pressed
+     * control steps down to is 2.75:1 in light and 2.63:1 in dark, so the two controls that press
+     * that way have to darken their edge as well, the way the three beside them already did.
+     */
+    private static final List<BoundedControl> BOUNDED_CONTROL_STATES = List.of(
+            new BoundedControl(".jc-new-chat:hover", List.of("surface-raised", "surface-sunken")),
+            new BoundedControl(".jc-new-chat:active", List.of("surface-raised", "surface-sunken")),
+            new BoundedControl(".jc-search:hover", List.of("surface", "surface-sunken")),
+            new BoundedControl(".jc-search[focused]", List.of("surface", "surface-sunken")),
+            new BoundedControl(".jc-composer__field:hover", List.of("surface-raised", "surface-sunken")),
+            new BoundedControl(".jc-composer__field:focus-within",
+                    List.of("surface-raised", "surface-sunken")),
+            new BoundedControl(".jc-jump__button:hover", List.of("surface-sunken", "surface")),
+            new BoundedControl(".jc-jump__button:active", List.of("border", "surface")),
+            new BoundedControl(".jc-skip-link:hover", List.of("surface-sunken", "surface")),
+            new BoundedControl(".jc-skip-link:active", List.of("border", "surface")),
+            new BoundedControl(".jc-dialog__close:hover", List.of("surface-sunken")),
+            new BoundedControl(".jc-dialog__close:active", List.of("border")),
+            new BoundedControl(".jc-edit-button:hover", List.of("surface-sunken", "surface")),
+            new BoundedControl(".jc-edit-button:active", List.of("border", "surface")),
+            new BoundedControl("vaadin-button.jc-send--stop:hover",
+                    List.of("surface-sunken", "surface-raised")),
+            new BoundedControl("vaadin-button.jc-send--stop:active",
+                    List.of("border", "surface-raised")));
+
+    @Test
+    @DisplayName("every control identified by its own edge draws that edge at 3:1 or better")
+    void everyBoundedControlClearsNonTextContrast() {
+        // The defect this pins, from a live audit of the running app: --jc-border-control existed and
+        // passed, and one rule in the sheet used it. Every other bounded control was still drawn with
+        // a surface hairline, so the search field had a 1.11:1 edge on a 1.10:1 fill - a control with
+        // no boundary at all, in both themes, on the column a reader navigates by.
+        assertThat(boundaryFailures(BOUNDED_CONTROLS))
+                .as("resting control boundaries under the 3:1 SC 1.4.11 asks of them")
+                .isEmpty();
+    }
+
+    @Test
+    @DisplayName("no hover or press state gives back the boundary the resting control has")
+    void noStateWeakensAControlBoundary() {
+        assertThat(boundaryFailures(BOUNDED_CONTROL_STATES))
+                .as("control boundaries that fall under 3:1 in a state the reader can reach")
+                .isEmpty();
+
+        // The one control that is bounded in a state and declares no boundary of its own, which is
+        // the point: a field locked while a turn streams is read-only, not inactive, so it keeps the
+        // edge its resting rule draws. What it gives up is elevation. Declaring a softer colour here
+        // is what put a 1.11:1 edge on the composer for the length of every answer.
+        assertThat(ruleFor(".jc-composer__field--busy {"))
+                .as("the locked composer keeps the resting boundary rather than stepping it down")
+                .doesNotContain("border-color:");
+    }
+
+    @Test
+    @DisplayName("the stop control is told apart from the field it is sitting inside")
+    void theStopControlHasAVisibleContainer() {
+        // The defect this pins: .jc-send--stop paints --jc-surface-raised, and so does the composer
+        // field it sits in - 1.00:1, fill against identical fill - so the entire container of the one
+        // control that interrupts a running answer was a 1.53:1 ring in light and 1.51:1 in dark.
+        String stop = ruleFor("vaadin-button.jc-send--stop {");
+        assertThat(stop).as("the fill is still the field's own, so the ring is the whole container")
+                .contains("var(--jc-surface-raised)");
+        assertThat(ruleFor(".jc-composer__field {")).contains("background: var(--jc-surface-raised)");
+
+        String boundary = boundaryToken(stop);
+        for (boolean light : new boolean[]{true, false}) {
+            assertThat(contrast(token(boundary, light), token("surface-raised", light)))
+                    .as("--jc-%s against the composer fill it is drawn on, %s",
+                            boundary, light ? "light" : "dark")
+                    .isGreaterThanOrEqualTo(NON_TEXT);
+        }
+    }
+
+    @Test
+    @DisplayName("the hairlines between two surfaces keep the soft tokens 1.4.11 does not reach")
+    void decorativeSeparatorsAreNotPromoted() {
+        // The other half of the criterion, and the one a contrast fix is most likely to trample: a
+        // divider between two surfaces carries no information and is exempt, so darkening it buys no
+        // compliance and costs the whole design - an interface whose structure is carried by tone
+        // would acquire a drawn grid. Each of these is measured at 1.11:1 to 1.83:1 and stays there.
+        List<String> separators = List.of(
+                ".jc-topbar {", ".jc-composer {", ".jc-sidebar {", ".jc-sidebar__head {",
+                ".jc-seam::after", ".jc-prose hr", ".jc-code {", ".jc-code__head");
+        for (String separator : separators) {
+            assertThat(ruleFor(separator))
+                    .as("%s is a division between surfaces, not a control boundary", separator)
+                    .doesNotContain("--jc-border-control");
+        }
+    }
+
+    /**
+     * Measures one roster and reports what fails, rather than stopping at the first bad pair.
+     *
+     * @param roster the rules to measure, each with the grounds its boundary is read against
+     * @return one line per pair below 3:1, in both themes; empty when every pair clears it
+     */
+    private List<String> boundaryFailures(List<BoundedControl> roster) {
+        List<String> failures = new ArrayList<>();
+        for (BoundedControl control : roster) {
+            String boundary = boundaryToken(ruleFor(control.selector()));
+            for (String ground : control.grounds()) {
+                for (boolean light : new boolean[]{true, false}) {
+                    double actual = contrast(token(boundary, light), token(ground, light));
+                    if (actual < NON_TEXT) {
+                        failures.add("%s draws --jc-%s on --jc-%s at %.2f:1 in %s".formatted(
+                                control.selector(), boundary, ground, actual, light ? "light" : "dark"));
+                    }
+                }
+            }
+        }
+        return failures;
+    }
+
+    /**
+     * Any declaration that paints a border, including the two Vaadin custom properties that are one.
+     *
+     * <p>Line-anchored so a {@code transition: border-color ...} value cannot read as a declaration
+     * of the property it names.
+     */
+    private static final Pattern BORDER_DECLARATION = Pattern.compile(
+            "(?m)^\\s*([\\w-]*border[\\w-]*)\\s*:\\s*([^;]+);");
+
+    private static final Pattern TOKEN_REFERENCE = Pattern.compile("var\\(--jc-([\\w-]+)\\)");
+
+    /**
+     * The colour a rule draws its boundary in, as a token name with the {@code --jc-} prefix removed.
+     *
+     * <p>Radius and width are skipped: they are border properties that carry no colour, and the
+     * search field declares all three. A rule with no colour token at all fails rather than passing
+     * quietly - a control that has lost its boundary is exactly the defect this file is measuring.
+     *
+     * @param rule a declaration block, as returned by {@link #ruleFor(String)}
+     * @return the token name, never null and never empty
+     */
+    private String boundaryToken(String rule) {
+        Matcher declarations = BORDER_DECLARATION.matcher(rule);
+        while (declarations.find()) {
+            String property = declarations.group(1);
+            if (property.contains("radius") || property.contains("width")) {
+                continue;
+            }
+            Matcher reference = TOKEN_REFERENCE.matcher(declarations.group(2));
+            if (reference.find()) {
+                return reference.group(1);
+            }
+        }
+        return fail("No border colour token in: " + rule.replaceAll("\\s+", " ").trim());
+    }
+
     /** The stylesheet's second audit table, for the two grounds the selected row deepens through. */
     private static final Pattern PRESS_ROW = Pattern.compile(
             "--jc-([\\w-]+) on soft-active\\s+(\\d+\\.\\d+):1 light\\s+(\\d+\\.\\d+):1 dark\\s+"
