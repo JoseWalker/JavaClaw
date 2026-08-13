@@ -328,13 +328,30 @@ final class ConversationTitles {
         return cut.stripTrailing() + "…";
     }
 
-    /** One line, one space between words, and bounded before any pattern is run over it. */
+    /**
+     * One line, one space between words, and bounded before any pattern is run over it.
+     *
+     * <p>The markdown comes out first, and that is not cosmetic. Everything this class produces is
+     * a <em>description</em> of a conversation - the label on a row, the excerpt in a tooltip, the
+     * name in the bar - and descriptions are read out loud. A message opening with a heading gave a
+     * screen reader "hash hash Java Ecosystem" and one opening with a fence gave it "backtick
+     * backtick backtick java pub": punctuation that exists to be rendered, read as words to the one
+     * reader who never sees it rendered. It was wrong on screen too, just quieter, because the
+     * column had been drawing the source of a heading rather than its text.
+     *
+     * <p>A message with no prose in it at all - a bare code block - projects to nothing, and the
+     * callers here already answer that with {@code Untitled chat} or with the conversation's title.
+     * An invented description would be worse than an admitted absence.
+     *
+     * @param text the raw message text, possibly null
+     * @return the prose in it on one line, empty when there is none
+     */
     private static String flatten(String text) {
         if (text == null) {
             return "";
         }
         String bounded = text.length() > MAX_SOURCE ? text.substring(0, MAX_SOURCE) : text;
-        return WHITESPACE.matcher(bounded).replaceAll(" ").strip();
+        return WHITESPACE.matcher(Markdown.plainText(bounded)).replaceAll(" ").strip();
     }
 
     /**

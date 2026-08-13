@@ -1243,12 +1243,28 @@ body {
 }
 
 /*
- * The region the link lands on. It is focusable only so the fragment can move the caret there, and
- * a reader who arrives that way has been taken somewhere deliberately - a ring around the whole
- * content region would be the interface shouting about its own plumbing.
+ * The region the skip link lands on.
+ *
+ * Keyboard arrival is the exception, and it is the only case that matters here. This element is
+ * focusable for exactly one reason - so the fragment can move the caret past the navigation - which
+ * means every focus it ever takes is a reader who asked to be moved and now needs to be told where
+ * they landed. Leaving that unmarked made the skip link land nowhere visible: the ring was
+ * suppressed at the one destination the whole mechanism exists to reach.
+ *
+ * Bare :focus stays unstyled, which is the original rationale intact: a pointer click inside the
+ * region can put focus on it, and a ring around the entire conversation for someone who is looking
+ * at it is the interface shouting about its own plumbing.
+ *
+ * Inset rather than outset so it does not fight the seam under the bar, which sits directly on this
+ * region's block-start edge.
  */
 .jc-main__content:focus {
     outline: none;
+}
+
+.jc-main__content:focus-visible {
+    outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
+    outline-offset: calc(-1 * var(--jc-focus-ring-width));
 }
 
 /* --- The scrim ----------------------------------------------------------- */
@@ -1641,6 +1657,21 @@ vaadin-dialog::part(footer) {
     scroll-padding-block-end: var(--jc-space-m);
     scrollbar-width: thin;
     scrollbar-color: var(--jc-border-strong) transparent;
+}
+
+/*
+ * The transcript is a tab stop because it is the element that scrolls: with focus on the content
+ * landmark instead, none of PageDown, ArrowDown, End or Space moved a box holding fourteen hundred
+ * pixels of conversation. Same ring as everything else, inset so it is drawn inside the scroll port
+ * rather than under the bar and over the composer.
+ */
+.jc-transcript:focus {
+    outline: none;
+}
+
+.jc-transcript:focus-visible {
+    outline: var(--jc-focus-ring-width) solid var(--jc-focus-ring-color);
+    outline-offset: calc(-1 * var(--jc-focus-ring-width));
 }
 
 .jc-transcript::-webkit-scrollbar {
@@ -2786,9 +2817,22 @@ vaadin-dialog::part(footer) {
     border-color: var(--jc-text-faint);
 }
 
+/*
+ * The primary control of the product, and until this it read as the least-focused thing on the
+ * page. The halo alone measured 1.37:1 against the field in light and 1.47:1 in dark, where every
+ * other control on this screen draws its ring at 5.57:1 and 7.43:1. It cleared SC 1.4.11 on the
+ * border recolour by itself, so this was coarseness rather than a failure - but the coarseness was
+ * concentrated on the one control a reader spends the whole session in.
+ *
+ * The ring is now the same ring, from the same tokens, drawn as a spread shadow rather than an
+ * outline because an outline would square off a field with a 14px radius. The halo stays outside it
+ * as the soft edge it always was.
+ */
 .jc-composer__field:focus-within {
     border-color: var(--jc-accent);
-    box-shadow: var(--jc-shadow-m), 0 0 0 3px var(--jc-focus-ring-halo);
+    box-shadow: var(--jc-shadow-m),
+                0 0 0 var(--jc-focus-ring-width) var(--jc-focus-ring-color),
+                0 0 0 calc(var(--jc-focus-ring-width) + 3px) var(--jc-focus-ring-halo);
 }
 
 /*
@@ -3003,7 +3047,8 @@ vaadin-dialog::part(footer) {
  */
 .jc-composer__field--busy:focus-within {
     border-color: var(--jc-accent);
-    box-shadow: 0 0 0 3px var(--jc-focus-ring-halo);
+    box-shadow: 0 0 0 var(--jc-focus-ring-width) var(--jc-focus-ring-color),
+                0 0 0 calc(var(--jc-focus-ring-width) + 3px) var(--jc-focus-ring-halo);
 }
 
 /* ==========================================================================

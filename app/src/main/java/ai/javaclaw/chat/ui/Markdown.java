@@ -71,6 +71,19 @@ final class Markdown {
      */
     private static final int MAX_TABLE_COLUMNS = 32;
 
+    /**
+     * How much of a message {@link #plainText} will look at.
+     *
+     * <p>A description is a line in a column and the opening of a tooltip; nothing past the first
+     * few hundred characters can reach either. The ceiling is here rather than at the call site
+     * because the input is model output of unbounded length and this runs once per visible row on
+     * every keystroke in the search box.
+     */
+    private static final int MAX_DESCRIBED = 600;
+
+    /** Runs of whitespace in a description, which is written on one line whatever it arrived as. */
+    private static final Pattern DESCRIBED_WHITESPACE = Pattern.compile("\\s+");
+
     /** Punctuation a backslash may hide from the parser, as in CommonMark. */
     private static final String ESCAPABLE = "\\`*_{}[]()#+-.!>~|";
 
@@ -95,6 +108,96 @@ final class Markdown {
         }
         String normalised = markdown.replace("\r\n", "\n").replace('\r', '\n');
         return blocks(List.of(normalised.split("\n", -1)), 0);
+    }
+
+    /**
+     * Projects markdown to the prose inside it, for the places that describe an answer rather than
+     * showing it.
+     *
+     * <h2>Why this exists</h2>
+     *
+     * <p>The conversation column describes each row with the opening of its first message, and the
+     * tooltip does the same at more length. Both were handed the source, so a screen reader read
+     * "hash hash Java Ecosystem" and "backtick backtick backtick java pub" out loud as the summary
+     * of a conversation - punctuation whose entire purpose is to be rendered, read as words to the
+     * one reader who never sees it rendered.
+     *
+     * <p>It is a projection of the same grammar {@link #render} parses, using the same patterns, so
+     * the two cannot drift into disagreeing about what a heading is. What it drops is what a
+     * description has no use for: a fenced block is code, and reading three lines of a method
+     * signature aloud tells nobody what a conversation is about. A message that is nothing but code
+     * therefore projects to nothing, and the caller falls back to the conversation's title - which
+     * is the honest answer rather than a fabricated one.
+     *
+     * <p>Bounded before any pattern runs over it. This is called once per visible row on every
+     * keystroke in the search box, and the input is model output of unbounded length.
+     *
+     * @param markdown raw message text, possibly null or blank
+     * @return one line of prose with single spaces between words, empty when there is no prose in
+     *         the input at all
+     */
+    static String plainText(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        String bounded = markdown.length() > MAX_DESCRIBED
+                ? markdown.substring(0, MAX_DESCRIBED)
+                : markdown;
+        String normalised = bounded.replace("\r\n", "\n").replace('\r', '\n');
+        StringBuilder prose = new StringBuilder();
+        boolean insideFence = false;
+        for (String line : normalised.split("\n", -1)) {
+            if (FENCE.matcher(line).matches()) {
+                insideFence = !insideFence;
+                continue;
+            }
+            if (insideFence || THEMATIC_BREAK.matcher(line).matches()) {
+                continue;
+            }
+            String written = undecorate(line);
+            if (written.isBlank()) {
+                continue;
+            }
+            if (!prose.isEmpty()) {
+                prose.append(' ');
+            }
+            prose.append(written);
+        }
+        return prose.toString();
+    }
+
+    /**
+     * One line with its block marker removed and its inline markup resolved to text.
+     *
+     * <p>The inline half is delegated to the renderer rather than stripped by hand: emphasis, code
+     * spans, links and maths all have rules about what counts as a delimiter, and a second
+     * implementation of those rules is a second set of them to get wrong. A link comes out as its
+     * label, which is what a reader would have seen.
+     *
+     * @param line one line of a message, already known not to be inside a fence
+     * @return the line's text, with runs of whitespace collapsed
+     */
+    private static String undecorate(String line) {
+        String stripped = line;
+        Matcher heading = HEADING.matcher(stripped);
+        if (heading.matches()) {
+            stripped = heading.group(2);
+        }
+        Matcher quote = QUOTE.matcher(stripped);
+        if (quote.matches()) {
+            stripped = quote.group(1);
+        }
+        Matcher bullet = BULLET.matcher(stripped);
+        if (bullet.matches()) {
+            stripped = bullet.group(3);
+        }
+        Matcher ordered = ORDERED.matcher(stripped);
+        if (ordered.matches()) {
+            stripped = ordered.group(3);
+        }
+        Element holder = new Element("span");
+        inline(stripped, holder, 1);
+        return DESCRIBED_WHITESPACE.matcher(holder.getTextRecursively()).replaceAll(" ").strip();
     }
 
     /**

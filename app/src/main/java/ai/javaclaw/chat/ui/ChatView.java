@@ -8,10 +8,12 @@ import com.vaadin.flow.component.Key;
 import com.vaadin.flow.component.KeyModifier;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.button.Button;
+import com.vaadin.flow.component.dialog.Dialog;
 import com.vaadin.flow.component.html.Div;
 import com.vaadin.flow.component.html.H2;
 import com.vaadin.flow.component.html.NativeButton;
 import com.vaadin.flow.component.html.Span;
+import com.vaadin.flow.component.popover.Popover;
 import com.vaadin.flow.component.textfield.TextArea;
 import com.vaadin.flow.data.value.ValueChangeMode;
 import com.vaadin.flow.dom.Element;
@@ -86,6 +88,18 @@ public class ChatView extends Div implements ConversationHost {
      * it will go looking.
      */
     private static final String ANSWERING = "Answering";
+
+    /**
+     * What the announcer says about a conversation arriving or being started.
+     *
+     * <p>The transcript is a log, and a log announces additions. Replacing one conversation with
+     * another, or emptying the transcript for a new chat, is therefore inaudible: the reader gets
+     * silence, or four thousand characters of text with nothing to say where it came from. These
+     * two lines are the only thing that names the change.
+     */
+    private static final String OPENED = "Opened ";
+    private static final String NEW_CHAT = "New chat";
+    private static final String UNNAMED_CONVERSATION = "an unnamed conversation";
     private static final String ANSWER_COMPLETE = "Answer complete";
     private static final String ANSWER_STOPPED = "Answer stopped";
     private static final String ANSWER_FAILED = "Answer failed";
@@ -202,6 +216,14 @@ public class ChatView extends Div implements ConversationHost {
         // A live region with no name is a region nobody can choose to jump to, because there is
         // nothing in the landmark list to choose.
         transcript.getElement().setAttribute("aria-label", TRANSCRIPT_LABEL);
+        // A tab stop, because this is the element that scrolls. The skip link lands on the content
+        // landmark, and from there none of PageDown, ArrowDown, End or Space moved a container with
+        // fourteen hundred pixels of overflow in it - the keys were going to a document that does
+        // not scroll while the conversation sat in a box that does. A scrollable region has to be
+        // reachable by keyboard for the same reason a scrollbar has to be reachable by pointer.
+        // It is safe as a tab stop precisely because it is already a named region rather than an
+        // anonymous div: a reader who lands here is told what they have landed on.
+        transcript.getElement().setAttribute("tabindex", "0");
         // The transcript starts at the bottom and stays there until a gesture says otherwise. The
         // attribute is what the stylesheet reads to show the way back; the client owns its value.
         transcript.getElement().setAttribute("data-pinned", "true");
@@ -373,16 +395,66 @@ public class ChatView extends Div implements ConversationHost {
         // The composer belongs to this view, so the keystroke that reaches it is registered here
         // rather than in the shell, which has no business knowing there is a field to reach.
         Shortcut.FOCUS_COMPOSER.register(this, prompt::focus);
-        // Escape stops the answer - but only when it was pressed inside this view. Scoping it here
-        // is what keeps Escape-to-close-a-dialog from also killing a generation running behind it:
-        // an overlay is teleported out of this subtree, so a keystroke inside one never reaches
-        // this listener at all. Propagation and the browser default are left alone for the same
-        // reason the shell leaves them alone on its own Escape.
-        Shortcut.ESCAPE.register(this, this::stopStreaming).forEach(registration -> {
-            registration.listenOn(this);
+        // Escape stops the answer from wherever the reader is standing. It used to be scoped with
+        // listenOn(this), which reads like a precaution and is really a reachability bug: the
+        // keystroke only fired for a target inside this view's subtree, and the skip link lands
+        // the reader on main.jc-main__content, which is not. The keyboard-primary path was
+        // therefore the one path on which the stop key did nothing - measured at 2838 further
+        // characters streaming in after Escape while the announcer still said "Answering".
+        //
+        // What the scoping was buying is bought properly below instead: the handler declines when
+        // no turn is running and when an overlay is on top, so Escape-to-close-a-dialog cannot
+        // also kill a generation behind it. Propagation and the browser default are left alone for
+        // the same reason the shell leaves them alone on its own Escape - an overlay that sees
+        // either one stops closing.
+        Shortcut.ESCAPE.register(this, this::stopFromKeystroke).forEach(registration -> {
             registration.setEventPropagationAllowed(true);
             registration.setBrowserDefaultAllowed(true);
         });
+    }
+
+    /**
+     * Escape, as a page-wide keystroke rather than as this view's private one.
+     *
+     * <p>Two refusals, and the shortcut is wrong without either. A keystroke with no generation
+     * running must be a no-op, because Escape now reaches this handler from every field and every
+     * corner of the shell - a handler that acted anyway would be clearing state it does not own.
+     * And a keystroke while something is open on top belongs to the thing on top: closing a dialog
+     * is what the reader asked for, and taking their answer down with it is not.
+     *
+     * <p>Overlay-open is asked of the component tree rather than inferred from where the event was
+     * delivered. The previous implementation inferred it, and paid for the inference with the
+     * whole keyboard-primary path.
+     *
+     * <p>Must run on the Vaadin UI thread; it is a shortcut command and Vaadin only calls it there.
+     */
+    private void stopFromKeystroke() {
+        if (!streaming || anOverlayIsOpen()) {
+            return;
+        }
+        stopStreaming();
+    }
+
+    /**
+     * Whether a dialog or a menu is currently open over the page.
+     *
+     * <p>Both are teleported out of this view's subtree when they open, so neither can be found by
+     * walking down from here; they are children of the UI. Anything this walk does not recognise
+     * is treated as "no overlay", which is the safe direction: the cost of missing one is that a
+     * generation the reader had probably forgotten about is stopped, and the cost of inventing one
+     * is a stop key that does nothing.
+     *
+     * @return true when something modal or menu-like is on top of the page
+     */
+    private boolean anOverlayIsOpen() {
+        return getUI().map(ui -> ui.getChildren().anyMatch(ChatView::isOpenOverlay)).orElse(false);
+    }
+
+    private static boolean isOpenOverlay(Component candidate) {
+        if (candidate instanceof Dialog dialog) {
+            return dialog.isOpened();
+        }
+        return candidate instanceof Popover popover && popover.isOpened();
     }
 
     /**
@@ -532,6 +604,39 @@ public class ChatView extends Div implements ConversationHost {
         conversationId = conversation.id();
         prompt.clear();
         showStoredTurns();
+        // Said because the transcript cannot say it. A log region announces what is added to it, so
+        // replacing a conversation with another one is - to anything listening rather than looking
+        // - a silent event followed by four thousand characters of unexplained text. This names the
+        // thread that just arrived, once, and stops.
+        announce(OPENED + displayName(conversation));
+    }
+
+    /**
+     * The reader has just asked for a new chat: put them in it.
+     *
+     * <p>Only ever reached from the explicit act, never from navigation or from a row being
+     * clicked. Choosing a conversation must leave the caret in the list the reader is browsing;
+     * asking for a new chat must not leave it on the document body in silence, which is what
+     * emptying a log region does when nothing else happens.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
+    @Override
+    public void enterNewConversation() {
+        announce(NEW_CHAT);
+        prompt.focus();
+    }
+
+    /**
+     * What to call a conversation out loud.
+     *
+     * @param conversation the conversation being opened
+     * @return its title, or a stable phrase when it has none - an announcement that trails off
+     *         after "Opened" is worse than one that admits the thread is not named yet
+     */
+    private static String displayName(ConversationSummary conversation) {
+        String title = conversation.title();
+        return title == null || title.isBlank() ? UNNAMED_CONVERSATION : title.strip();
     }
 
     /** The conversation currently bound, for the shell that chose it. */
@@ -539,8 +644,15 @@ public class ChatView extends Div implements ConversationHost {
         return conversationId;
     }
 
-    /** Redraws the transcript from what the store holds for the bound conversation. */
+    /**
+     * Redraws the transcript from what the store holds for the bound conversation.
+     *
+     * <p>The region is muted before the store is read rather than after. Reading is part of the
+     * load, and a quiet window that opens only once the turns are in hand is a quiet window that
+     * has already missed the moment it exists for on any store that answers slowly.
+     */
     private void showStoredTurns() {
+        markTranscriptBusy(true);
         showTurns(transcripts.turns(conversationId));
     }
 
@@ -556,6 +668,13 @@ public class ChatView extends Div implements ConversationHost {
      * @param stored the turns to draw, oldest first
      */
     private void showTurns(List<TranscriptTurn> stored) {
+        // Busy for the whole rebuild, for the same reason the streaming path is busy for the whole
+        // turn. Clicking a row pushed 4456 characters through a polite log region, one insertion of
+        // them 4203 characters long, with aria-busy false throughout - a screen reader reading an
+        // entire conversation aloud because the reader glanced at it. The mechanism that already
+        // suppressed sixteen thousand streaming mutations is the same one; it was simply never
+        // applied to the other way a transcript changes.
+        markTranscriptBusy(true);
         transcriptInner.removeAll();
         transcriptInner.add(emptyState);
         emptyState.setVisible(stored.isEmpty());
@@ -569,7 +688,28 @@ public class ChatView extends Div implements ConversationHost {
             message.identify(turn.id());
             message.markComplete();
         }
+        // Cleared to whatever the streaming state says rather than to false: a rewind redraws the
+        // transcript in the middle of a turn, and clearing it flat would unmute the region for the
+        // rest of the answer.
+        markTranscriptBusy(streaming);
         scrollTranscriptToEnd();
+    }
+
+    /**
+     * Mutes or unmutes the transcript as a live region.
+     *
+     * <p>One method for the two things that change a transcript wholesale - an answer streaming in
+     * and a conversation being loaded - because they are the same problem: a polite log region
+     * announces every addition, and both of these make hundreds or thousands of them. Held here so
+     * neither path can be given the treatment and the other forgotten, which is exactly what had
+     * happened.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param busy true while the region is being rewritten and must not be read out
+     */
+    private void markTranscriptBusy(boolean busy) {
+        transcript.getElement().setAttribute("aria-busy", String.valueOf(busy));
     }
 
     // ----------------------------------------------------------------- behaviour
@@ -876,7 +1016,7 @@ public class ChatView extends Div implements ConversationHost {
         // Busy while the tokens arrive. Without it a log region announces every fragment as it
         // lands, which is a screen reader reading an answer one word at a time for thirty seconds;
         // with it, the additions are held and read once when the turn closes.
-        transcript.getElement().setAttribute("aria-busy", String.valueOf(busy));
+        markTranscriptBusy(busy);
 
         composerField.setClassName("jc-composer__field");
         if (busy) {

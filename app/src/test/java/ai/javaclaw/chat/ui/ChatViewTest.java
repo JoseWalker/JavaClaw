@@ -20,6 +20,7 @@ import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -156,6 +157,33 @@ class ChatViewTest {
         assertThat(transcriptText(view)).contains("Something");
     }
 
+    /**
+     * Clicking a row pushed 4456 characters through a polite log region - one insertion of them
+     * 4203 characters long - with {@code aria-busy} reading false the whole way. A screen reader
+     * read an entire conversation out because the reader glanced at it. The streaming path already
+     * did the right thing with the same one attribute, sixteen thousand mutations at a time; this
+     * is that mechanism applied to the other way a transcript changes wholesale.
+     */
+    @Test
+    @DisplayName("a conversation is loaded quietly and then named, rather than read out in full")
+    void aLoadIsMutedAndThenAnnounced() {
+        FakeTranscripts transcripts = new FakeTranscripts();
+        transcripts.give("web-abc", user("How do virtual threads work?"), assistant("They unmount."));
+        ChatView view = new ChatView(new SilentAgent(), executor, transcripts, new ConversationActivity());
+        Element transcript = byClass(view, "jc-transcript");
+        transcripts.watch(() -> transcript.getAttribute("aria-busy"));
+
+        view.openConversation(summary("web-abc"));
+
+        assertThat(transcripts.busyWhileReading).isEqualTo("true");
+        // And released again, or the region would stay muted for every answer after it.
+        assertThat(transcript.getAttribute("aria-busy")).isEqualTo("false");
+        // Said out loud, because a log region announces what is added to it and nothing announces
+        // that four thousand characters of it belong to a different conversation than before.
+        assertThat(byClass(view, "jc-announcer").getTextRecursively())
+                .isEqualTo("Opened A conversation");
+    }
+
     // ------------------------------------------------------- while it streams
 
     /**
@@ -188,6 +216,50 @@ class ChatViewTest {
         click(action(view, "Stop responding"));
 
         assertThat(composer(view).isReadOnly()).isFalse();
+    }
+
+    /**
+     * The keystroke was registered with {@code listenOn(this)}, which sounds like scoping and is
+     * really a reachability bug: the listener only fires for a keydown whose target is inside the
+     * view's own subtree, and the skip link lands the reader on {@code main.jc-main__content},
+     * which is not. A reader who arrived that way, or who was anywhere else in the shell, pressed
+     * Escape and watched the answer carry on - measured at 2838 further characters while the
+     * announcer still said "Answering".
+     *
+     * <p>The event is fired on the UI's own element, which is what a keystroke with no field
+     * focused reaches, and is by construction outside this view.
+     */
+    @Test
+    @DisplayName("Escape stops the answer from anywhere on the page, not only from inside the view")
+    void stopsTheAnswerWhenEscapeArrivesFromOutsideTheView() {
+        ChatView view = inSession(new RecordingAgent(), new FakeTranscripts());
+        UI ui = view.getUI().orElseThrow();
+        composer(view).setValue("How do they work?");
+        click(action(view, "Send message"));
+        assertThat(composer(view).isReadOnly()).isTrue();
+
+        UiHarness.press(ui.getElement(), "Escape");
+
+        assertThat(composer(view).isReadOnly()).isFalse();
+    }
+
+    /**
+     * The other half of unscoping it. Escape belongs to whatever is on top - a dialog, a menu, the
+     * search box's own clear - and the handler now runs for every one of those, so it has to be
+     * able to tell "stop the answer" from "there is no answer". A handler that threw, or that
+     * cleared state it did not own, would have traded one defect for a louder one.
+     */
+    @Test
+    @DisplayName("Escape with nothing running changes nothing")
+    void escapeWithNoTurnRunningIsANoOp() {
+        ChatView view = inSession(new RecordingAgent(), new FakeTranscripts());
+        UI ui = view.getUI().orElseThrow();
+        composer(view).setValue("A draft nobody has sent");
+
+        UiHarness.press(ui.getElement(), "Escape");
+
+        assertThat(composer(view).isReadOnly()).isFalse();
+        assertThat(composerValue(view)).isEqualTo("A draft nobody has sent");
     }
 
     @Test
@@ -318,6 +390,24 @@ class ChatViewTest {
         return view;
     }
 
+    /**
+     * The same view, in a UI that has a session behind it.
+     *
+     * <p>Only the keystroke tests need this, and they need it for one reason: driving a real DOM
+     * listener means letting Vaadin finish the work it defers to the client response, and the
+     * deferred work includes the {@code executeJs} calls this view installs on attach. Those go
+     * through the session lock, so a UI with no session throws before the listener is ever
+     * attached. The session is a stub with the lock check disabled rather than a real one - the
+     * tests assert about a keystroke, not about session management, and a real session needs a
+     * servlet and a deployment configuration to exist at all.
+     */
+    private static ChatView inSession(Agent agent, ConversationTranscripts transcripts) {
+        ChatView view = new ChatView(agent, new SameThreadExecutor(), transcripts, new ConversationActivity());
+        UI ui = UiHarness.ui();
+        ui.add(view);
+        return view;
+    }
+
     private static ConversationSummary summary(String id) {
         return new ConversationSummary(id, "A conversation", "", "Web", List.of(), Optional.empty(),
                 ConversationSummary.Source.STORED);
@@ -394,6 +484,13 @@ class ChatViewTest {
                 .filter(area -> "Message".equals(area.getAriaLabel().orElse("")))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("The view has no composer"));
+    }
+
+    private static Element byClass(ChatView view, String className) {
+        return descendants(view.getElement())
+                .filter(element -> element.getClassList().contains(className))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No element with class " + className));
     }
 
     private static void click(Element element) {
@@ -501,6 +598,22 @@ class ChatViewTest {
         private boolean refuseRewinds;
         private int minted;
 
+        /**
+         * Reads whatever the test wants to know at the moment the store is asked for a transcript.
+         *
+         * <p>The quiet window a load opens is only observable from inside it: by the time
+         * {@code openConversation} returns, the region has been muted, rewritten and unmuted again.
+         * The store read is the one point the test can stand at while the window is open.
+         */
+        private Supplier<String> watched;
+
+        /** What {@link #watched} reported the last time this store was read. */
+        private String busyWhileReading;
+
+        void watch(Supplier<String> observation) {
+            watched = observation;
+        }
+
         void give(String id, ConversationMessage... messages) {
             List<TranscriptTurn> turns = new ArrayList<>();
             for (ConversationMessage message : messages) {
@@ -519,6 +632,9 @@ class ChatViewTest {
 
         @Override
         public List<TranscriptTurn> turns(String id) {
+            if (watched != null) {
+                busyWhileReading = watched.get();
+            }
             return List.copyOf(byConversation.getOrDefault(id, List.of()));
         }
 

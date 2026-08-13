@@ -6,7 +6,11 @@ import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.Component;
 import com.vaadin.flow.component.ComponentUtil;
 import com.vaadin.flow.component.UI;
+import com.vaadin.flow.component.dialog.Dialog;
 import com.vaadin.flow.dom.Element;
+import com.vaadin.flow.internal.StateTree;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
@@ -83,6 +87,35 @@ class KeyboardAccessTest {
         assertThat(Shortcut.NEW_CHAT.isGlobal()).isTrue();
     }
 
+    // ------------------------------------------------------------------ the document
+
+    /**
+     * The served page declared {@code lang="es"}, and it declared it to everybody: the same value
+     * came back under three different {@code Accept-Language} headers, because Vaadin had nothing
+     * to go on but the JVM default locale of whoever started the process. Every string in this
+     * interface is English, so a screen reader was being told to read English prose with Spanish
+     * pronunciation rules.
+     */
+    @Test
+    @DisplayName("the document says what language it is in, and does not guess")
+    void theDocumentDeclaresItsLanguage() {
+        Document served = Jsoup.parse("<html><head></head><body></body></html>");
+
+        DocumentLanguage.pin(served);
+
+        assertThat(served.selectFirst("html").attr("lang")).isEqualTo("en");
+    }
+
+    @Test
+    @DisplayName("a language already declared by the document is replaced rather than left to chance")
+    void theDeclaredLanguageIsAuthoritative() {
+        Document served = Jsoup.parse("<html lang=\"es\"><head></head><body></body></html>");
+
+        DocumentLanguage.pin(served);
+
+        assertThat(served.selectFirst("html").attr("lang")).isEqualTo("en");
+    }
+
     // ------------------------------------------------------------------ the shell
 
     @Test
@@ -145,6 +178,79 @@ class KeyboardAccessTest {
                 .isEqualTo(Shortcut.SEARCH.ariaKeyShortcuts());
     }
 
+    // ------------------------------------------------------------------ the chords, driven
+
+    /**
+     * Ctrl/Cmd + K was in the help dialog and did nothing. With the column collapsed - which is the
+     * default on a tablet and the state a desktop reader leaves it in when they want the measure -
+     * the shortcut focused a field inside a hidden column: the active element stayed on the body,
+     * {@code data-sidebar} stayed "closed", and nothing was announced. A key that is documented and
+     * dead is worse than one that is undocumented, because the help is what sent the reader to it.
+     */
+    @Test
+    @DisplayName("the search shortcut opens the column it searches before reaching into it")
+    void searchOpensTheColumnFirst() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(stored("web-abc", "Build tools")),
+                new MockEnvironment());
+        ui.add(shell);
+        UiHarness.press(ui.getElement(), "KeyB");
+        assertThat(shell.getElement().getAttribute("data-sidebar")).isEqualTo("closed");
+
+        UiHarness.press(ui.getElement(), "KeyK");
+
+        assertThat(shell.getElement().getAttribute("data-sidebar")).isEqualTo("open");
+    }
+
+    /**
+     * The same audit applied to the other row of the table that reaches into the column. Starting a
+     * chat from the keyboard emptied the transcript, left the caret on the document body and said
+     * nothing at all - {@code role="log"} announces additions, so removing every message produces
+     * no output whatsoever, and the one thing a reader needs after starting a chat is to be in the
+     * box they are about to type in.
+     */
+    @Test
+    @DisplayName("starting a chat from the keyboard says so and puts the caret where the typing goes")
+    void aNewChatIsAnnouncedAndFocused() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(stored("web-abc", "Build tools")),
+                new MockEnvironment());
+        ChatView view = new ChatView(new SilentAgent(), new SameThreadExecutor(),
+                new EmptyTranscripts(), new ConversationActivity());
+        shell.showRouterLayoutContent(view);
+        ui.add(shell);
+
+        UiHarness.press(ui.getElement(), "KeyO");
+
+        assertThat(byClass(view.getElement(), "jc-announcer").getTextRecursively()).isEqualTo("New chat");
+    }
+
+    /**
+     * Collapsing the column while the caret was on a conversation row left it on the document body,
+     * because the row it was sitting on had just been hidden - so the reader's next Tab restarted
+     * the whole order. Expanding did the same in reverse. The 390px drawer already hands focus over
+     * in both directions; this is that behaviour, no longer conditional on the drawer overlaying
+     * anything.
+     */
+    @Test
+    @DisplayName("the sidebar toggle takes the caret with it, in both directions")
+    void togglingTheSidebarMovesTheCaret() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(stored("web-abc", "Build tools")),
+                new MockEnvironment());
+        ui.add(shell);
+
+        UiHarness.press(ui.getElement(), "KeyB");
+        List<String> afterCollapsing = focusCalls(ui);
+        assertThat(afterCollapsing).isNotEmpty();
+        assertThat(afterCollapsing.getLast()).contains("jc-topbar__toggle");
+
+        UiHarness.press(ui.getElement(), "KeyB");
+        List<String> afterExpanding = focusCalls(ui);
+        assertThat(afterExpanding).isNotEmpty();
+        assertThat(afterExpanding.getLast()).contains("jc-sidebar__collapse");
+    }
+
     @Test
     @DisplayName("the conversation list does not claim to be a list of things that are not items")
     void theSidebarDoesNotMisdeclareItsRows() {
@@ -179,6 +285,69 @@ class KeyboardAccessTest {
         assertThat(head.getAttribute("aria-controls")).isEqualTo(items.getAttribute("id"));
         assertThat(items.getAttribute("role")).isEqualTo("group");
         assertThat(items.getAttribute("aria-labelledby")).isEqualTo(head.getAttribute("id"));
+    }
+
+    // ------------------------------------------------------------------ the session menu
+
+    /**
+     * It declared {@code role="menu"} over three {@code role="menuitem"} children and then ignored
+     * ArrowDown, ArrowUp and Home in four attempts out of four, which is what a reader told they
+     * are in a menu will press. It also nested two menu roles, so the accessibility tree carried an
+     * unnamed inner menu level nobody put there on purpose. Half a menu is worse than no menu: the
+     * role is a promise about which keys work, and these three buttons only ever answered to Enter
+     * and Space - which is exactly what plain buttons answer to.
+     */
+    @Test
+    @DisplayName("the session menu does not promise menu keys it does not answer to")
+    void theSessionMenuIsNotHalfAMenu() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(), new MockEnvironment());
+        ui.add(shell);
+        // The panel is inside a popover, and Vaadin adds a popover to the UI rather than leaving it
+        // under the control it is anchored to - so it is not a descendant of the shell at all.
+        Element panel = byClass(ui.getElement(), "jc-menu");
+
+        List<String> roles = Stream.concat(Stream.of(panel), descendants(panel))
+                .map(element -> element.getAttribute("role"))
+                .filter(role -> role != null)
+                .toList();
+
+        assertThat(roles).doesNotContain("menu", "menuitem");
+        // The trigger still says something opens, because something does - it just is not a menu.
+        assertThat(byClass(shell.getElement(), "jc-user__trigger").getAttribute("aria-expanded"))
+                .isEqualTo("false");
+        assertThat(byClass(shell.getElement(), "jc-user__trigger").getAttribute("aria-haspopup"))
+                .isNotEqualTo("menu");
+    }
+
+    /**
+     * Opened from the user menu, Escape dropped focus on the body: the control that opened the
+     * dialog was a menu item, and the menu item had been destroyed with the menu, so the browser's
+     * own restore target no longer existed. Opened with Ctrl/Cmd + / the same dialog returned focus
+     * correctly. One dialog, two behaviours, decided by which door the reader came through.
+     */
+    @Test
+    @DisplayName("closing the shortcuts dialog gives focus back to wherever it came from")
+    void theShortcutsDialogRestoresFocus() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(), new MockEnvironment());
+        ui.add(shell);
+
+        UiHarness.press(ui.getElement(), "Slash");
+        // Opening an overlay is deferred to the client response like everything else, so the queue
+        // is drained before looking for it - and drained again below, so the only scripts read
+        // after the close are the ones the close produced.
+        scripts(ui);
+        Dialog help = ui.getChildren()
+                .filter(Dialog.class::isInstance)
+                .map(Dialog.class::cast)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Ctrl + / opened no dialog"));
+        assertThat(help.isOpened()).isTrue();
+
+        help.close();
+
+        assertThat(String.join("\n", scripts(ui))).contains("__jcFocusReturn");
     }
 
     // ------------------------------------------------------------------ the transcript
@@ -261,6 +430,48 @@ class KeyboardAccessTest {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * The elements the server has told the browser to focus, oldest first.
+     *
+     * <p>Focus is the one half of keyboard behaviour that has no server-side state to assert on:
+     * {@code focus()} is a queued call into the browser, so the queue is what there is to read.
+     * Each call is identified by the class of the element it was made on, which is how the rest of
+     * these tests name controls too.
+     *
+     * @param ui the UI whose queue to drain; draining it empties it, so a test that presses twice
+     *           reads twice and sees each move on its own
+     * @return one entry per focus call, as the space-joined class list of its target
+     */
+    private static List<String> focusCalls(UI ui) {
+        ((StateTree) ui.getElement().getNode().getOwner()).runExecutionsBeforeClientResponse();
+        return ui.getInternals().dumpPendingJavaScriptInvocations().stream()
+                .filter(pending -> pending.getInvocation().getExpression().contains(".focus("))
+                .map(pending -> pending.getInvocation().getParameters().stream()
+                        .filter(Element.class::isInstance)
+                        .map(Element.class::cast)
+                        .map(element -> String.join(" ", element.getClassList()))
+                        .findFirst()
+                        .orElse(""))
+                .toList();
+    }
+
+    /**
+     * The scripts the server has queued for the browser since this was last called.
+     *
+     * <p>Focus restoration has no server-side state to assert on - it is a call into the browser,
+     * so the queue is what there is to read. Draining it is deliberate: a test reads once to
+     * discard everything up to the moment it is interested in, then reads again.
+     *
+     * @param ui the UI whose queue to drain
+     * @return one entry per queued script, in the order they will run
+     */
+    private static List<String> scripts(UI ui) {
+        ((StateTree) ui.getElement().getNode().getOwner()).runExecutionsBeforeClientResponse();
+        return ui.getInternals().dumpPendingJavaScriptInvocations().stream()
+                .map(pending -> pending.getInvocation().getExpression())
+                .toList();
+    }
 
     private static List<String> rows(Component help) {
         return descendants(help.getElement())

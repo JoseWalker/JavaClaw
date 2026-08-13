@@ -296,9 +296,15 @@ public class MainLayout extends Div implements RouterLayout {
         // from - see Shortcut. Nothing here chooses a key, so nothing here can ship a key the
         // reader has no way of finding.
         Shortcut.TOGGLE_SIDEBAR.register(this, this::toggleSidebar);
-        Shortcut.SEARCH.register(this, sidebar::focusSearch);
-        Shortcut.NEW_CHAT.register(this, sidebar::startNewChat);
+        // Every chord that reaches into the column has to open it first. Ctrl/Cmd + K used to call
+        // focusSearch directly, which on a collapsed column focuses a field inside something the
+        // stylesheet has set visibility:hidden - the caret stayed on the body, the column stayed
+        // shut, and the reader was told nothing. It was in the help dialog the whole time, which
+        // makes it worse than an undocumented key rather than better: the help is what sent them.
+        Shortcut.SEARCH.register(this, this::searchConversations);
+        Shortcut.NEW_CHAT.register(this, this::startNewChat);
         Shortcut.HELP.register(this, sidebar::showKeyboardShortcuts);
+        installFocusMemory();
         // Escape belongs to whatever is on top - a dialog, a menu - before it belongs to the shell.
         // Both defaults have to be relaxed for that: a shortcut normally stops propagation and calls
         // preventDefault, and an overlay that sees either of those stops closing on Escape.
@@ -339,6 +345,80 @@ public class MainLayout extends Div implements RouterLayout {
 
     private void toggleSidebar() {
         rememberSidebarState(!isSidebarOpen());
+    }
+
+    /**
+     * Opens the conversation column and puts the caret in its search box.
+     *
+     * <p>Two steps, in this order, and the order is the fix: the field lives inside a column the
+     * stylesheet hides outright when it is shut, and focusing a hidden element is a no-op the
+     * browser reports as success. The state is written first, so by the time the queued
+     * {@code focus()} reaches the browser the column is showing and the field can take it. It is
+     * the same two-step the drawer toggle already performs.
+     *
+     * <p>Deliberately not conditional on the column being shut. Opening an already-open column is
+     * a no-op that costs nothing, and a branch here would be a second place for the two paths to
+     * disagree.
+     */
+    private void searchConversations() {
+        rememberSidebarState(true);
+        sidebar.focusSearch();
+    }
+
+    /**
+     * Starts a chat, and leaves the reader in it rather than merely in front of it.
+     *
+     * <p>The keystroke used to call straight into the column, which emptied the transcript and
+     * stopped there: the caret was left on the document body and nothing was said out loud, because
+     * {@code role="log"} announces what is <em>added</em> to a region and removing every message
+     * adds nothing at all. So the one action whose whole purpose is "I want to type something else"
+     * ended with the reader nowhere, in silence.
+     *
+     * <p>The view is asked to finish the job because the view owns the composer and the announcer;
+     * a shell that reached in to focus a field would be the shell knowing there is a field.
+     */
+    private void startNewChat() {
+        sidebar.startNewChat();
+        if (host != null) {
+            host.enterNewConversation();
+        }
+    }
+
+    /**
+     * Remembers where focus was before an overlay took it, for whatever has to give it back.
+     *
+     * <p>A dialog opened from the user menu used to drop focus on the body when it closed, because
+     * the control that opened it - a menu item - had been destroyed along with the menu, and the
+     * browser's own restore target no longer existed. The same dialog opened with Ctrl/Cmd + /
+     * returned correctly. Two entry points, two behaviours, from one dialog.
+     *
+     * <p>So the last element focused <em>outside</em> any overlay is kept, and that is what closing
+     * an overlay returns to. It is the trigger in the menu case and the reader's previous position
+     * in the keyboard case, which is the same rule stated once rather than two special cases.
+     *
+     * <p>Installed once per document and guarded on its own flag: this shell can be re-attached,
+     * and a second listener would not be wrong so much as pointless. Client-side because it is the
+     * only side that knows what has focus.
+     */
+    private void installFocusMemory() {
+        getElement().executeJs("""
+                if (window.__jcFocusMemory) {
+                    return;
+                }
+                window.__jcFocusMemory = true;
+                // Capture phase: focusin bubbles, but an overlay's own handlers may stop it.
+                document.addEventListener('focusin', (event) => {
+                    const target = event.target;
+                    if (!(target instanceof HTMLElement) || typeof target.focus !== 'function') {
+                        return;
+                    }
+                    // Anything inside an overlay is where focus is going, not where it came from.
+                    if (target.closest('vaadin-dialog-overlay, vaadin-popover-overlay')) {
+                        return;
+                    }
+                    window.__jcFocusReturn = target;
+                }, true);
+                """);
     }
 
     private void closeSidebar() {
@@ -389,6 +469,13 @@ public class MainLayout extends Div implements RouterLayout {
      * a reader who wants the browser's chrome should get it; Escape and the close control are both
      * exits, and a caged drawer would be a worse failure than the one being fixed.
      *
+     * <p>The handover is no longer conditional on the drawer overlaying anything, and that was a
+     * defect rather than a scope. On a desktop, collapsing the column while the caret sat on a
+     * conversation row hid the element it was on, so the browser dropped focus to the document body
+     * and the reader's next Tab restarted the entire order - eighty-odd stops away from where they
+     * had been. Expanding did the same in reverse. The rule is the same at every width: the control
+     * that takes over from the one that just disappeared gets the caret.
+     *
      * @param byChoice true when this follows a toggle the reader worked, false when it follows a
      *                 resize or the first report of the viewport width - neither of which is a
      *                 reason to move anybody's caret
@@ -404,12 +491,19 @@ public class MainLayout extends Div implements RouterLayout {
         // A drawer that covers the content also takes it out of play: without this the Tab key walks
         // straight past the drawer into a transcript the reader cannot see behind it.
         content.getElement().setAttribute("inert", overlays && open);
+        // Behaviourally the drawer already is a modal dialog - it makes the content inert, draws a
+        // scrim over it and answers Escape - and it announced none of that. A reader was moved into
+        // an unnamed navigation landmark with no way to hear that the page behind it had gone away.
+        // Only in the arrangement where it is true: at desktop width the column pushes the content
+        // aside rather than covering it, and calling that a dialog would be a lie that also costs
+        // the page its navigation landmark.
+        sidebar.presentAsDrawer(overlays && open);
         drawerToggle.getElement().setAttribute("aria-expanded", String.valueOf(open));
         String action = open ? "Hide the conversation list" : "Show the conversation list";
         drawerToggle.setAriaLabel(action);
         drawerToggle.setTooltipText(Shortcut.TOGGLE_SIDEBAR
                 .tooltip(open ? "Hide conversations" : "Show conversations"));
-        if (!byChoice || !overlays) {
+        if (!byChoice) {
             return;
         }
         if (open) {

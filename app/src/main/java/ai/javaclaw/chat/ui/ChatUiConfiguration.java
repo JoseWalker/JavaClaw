@@ -35,4 +35,16 @@ public class ChatUiConfiguration {
     public VaadinServiceInitListener themeBootstrapListener() {
         return new ThemeBootstrapListener();
     }
+
+    /**
+     * Declares the language of the served page, which Vaadin would otherwise infer.
+     *
+     * <p>A separate bean rather than another job for the theme listener: the two write to the same
+     * document and share nothing else, and a class named for the theme quietly deciding the
+     * document's language is how a reader stops trusting the names.
+     */
+    @Bean
+    public VaadinServiceInitListener documentLanguageListener() {
+        return new DocumentLanguage();
+    }
 }

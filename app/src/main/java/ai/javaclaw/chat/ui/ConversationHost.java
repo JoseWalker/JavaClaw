@@ -21,4 +21,23 @@ interface ConversationHost {
      * @param conversation the conversation to show; never null
      */
     void openConversation(ConversationSummary conversation);
+
+    /**
+     * Settles the reader into a chat that has just been started for them.
+     *
+     * <p>Separate from {@link #openConversation} because starting a chat and choosing one are
+     * different requests with different right answers. Choosing a conversation means "show me
+     * this", and moving the caret out of the list the reader is browsing would be taking the list
+     * away mid-browse. Starting one means "I want to ask something else", and leaving the caret
+     * where it was - which for a keystroke is nowhere at all - is the shell hearing the request and
+     * doing half of it.
+     *
+     * <p>Called after the conversation has been opened, never instead of it.
+     *
+     * <p>Default: nothing. A view that has no composer to move into is entitled to stay put, and
+     * making this abstract would force every future host to write an empty method to say so.
+     */
+    default void enterNewConversation() {
+        // A host with nowhere to put the caret has nothing to do here.
+    }
 }

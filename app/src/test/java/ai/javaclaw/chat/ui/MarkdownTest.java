@@ -29,6 +29,60 @@ class MarkdownTest {
         assertThat(text(blocks)).doesNotContain("**", "`");
     }
 
+    /**
+     * The conversation column describes each row with the opening of its first message, and it was
+     * describing them with the source. A screen reader was reading "hash hash Java Ecosystem" and
+     * "backtick backtick backtick java pub" aloud as the summary of a conversation - punctuation
+     * that exists to be rendered, read out as words to the one reader who cannot see it rendered.
+     * The same projection is what a tooltip wants, for the same reason.
+     */
+    @Test
+    @DisplayName("a description of an answer reads as prose, not as its punctuation")
+    void projectsMarkdownToPlainText() {
+        String projected = Markdown.plainText("""
+                ## Java Ecosystem
+
+                A **bold** claim about `virtual threads` and [the docs](https://example.com).
+                """);
+
+        assertThat(projected).isEqualTo(
+                "Java Ecosystem A bold claim about virtual threads and the docs.");
+    }
+
+    @Test
+    @DisplayName("code blocks are left out of a description rather than read out a token at a time")
+    void leavesCodeOutOfPlainText() {
+        String projected = Markdown.plainText("""
+                Here is how:
+
+                ```java
+                public static void main(String[] args) {}
+                ```
+
+                That is all.
+                """);
+
+        assertThat(projected).isEqualTo("Here is how: That is all.");
+    }
+
+    @Test
+    @DisplayName("list and quote markers become the text they decorate")
+    void flattensBlockMarkers() {
+        String projected = Markdown.plainText("- First\n- Second\n\n> Quoted\n\n1. Numbered\n");
+
+        assertThat(projected).isEqualTo("First Second Quoted Numbered");
+    }
+
+    @Test
+    @DisplayName("a description of nothing is nothing, not a stray fragment")
+    void plainTextOfNothing() {
+        assertThat(Markdown.plainText(null)).isEmpty();
+        assertThat(Markdown.plainText("   \n\n ")).isEmpty();
+        // Every line was a fence or its contents, so there is no prose to project. Empty is the
+        // honest answer; the caller falls back to the conversation's title.
+        assertThat(Markdown.plainText("```java\nint x = 1;\n```")).isEmpty();
+    }
+
     @Test
     @DisplayName("a numbered list is a list, with its items intact")
     void rendersOrderedList() {

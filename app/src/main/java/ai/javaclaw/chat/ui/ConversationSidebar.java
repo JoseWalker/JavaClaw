@@ -99,6 +99,15 @@ class ConversationSidebar extends Nav {
     private final Set<String> collapsedGroups = new LinkedHashSet<>();
 
     /**
+     * How many seams this render has drawn, which is what their descriptions are identified by.
+     *
+     * <p>A position in the current render rather than anything derived from the rows, for the same
+     * reason the group ids are: store data has no business becoming a DOM id. Reset at the top of
+     * every render, so the ids do not climb for the lifetime of the session.
+     */
+    private int seamsDrawn;
+
+    /**
      * The row the reader is in. Initialised from the conversation the view below is talking to, not
      * from a click: a list where nothing is marked until something is clicked leaves the one piece
      * of state this column exists to carry unsaid on every first paint.
@@ -312,6 +321,7 @@ class ConversationSidebar extends Nav {
      */
     private void renderList() {
         list.removeAll();
+        seamsDrawn = 0;
 
         List<ConversationSummary> stored = directory.conversations();
         // Once the store can answer for the same id, the placeholder has done its job: leaving it
@@ -512,25 +522,46 @@ class ConversationSidebar extends Nav {
         for (ConversationSummary item : items) {
             if (item.source() != ConversationSummary.Source.DRAFT
                     && item.updatedAt().isEmpty() && !seamDrawn) {
-                target.add(seam());
+                target.add(seam(seamsDrawn++));
                 seamDrawn = true;
             }
             target.add(row(item, labels));
         }
     }
 
-    /** The marker itself: a rule, a label, and the whole explanation for whoever wants it. */
-    private static Component seam() {
+    /**
+     * The marker itself: a rule, a label, and the whole explanation for whoever wants it.
+     *
+     * <p>The name is the two words on screen and the explanation is a description hanging off it.
+     * They used to be the same string, which meant a hundred and ninety-nine characters of prose
+     * were read out in full every time a reader crossed this element while navigating - and
+     * navigating past things is exactly what element navigation is for. A name answers "what is
+     * this", and it should be short enough to be worth hearing on the way past; a description
+     * answers "why", and assistive technology is entitled to skip it or to read it on request.
+     *
+     * @param index this seam's position in the current render, which the description's id is built
+     *              from - a grouped column can draw one per group, and two elements cannot share an
+     *              id without the reference resolving to whichever came first
+     */
+    private static Component seam(int index) {
         Span label = new Span(SEAM_LABEL);
         label.addClassName("jc-seam__label");
 
-        Div seam = new Div(label);
+        String explanationId = "jc-seam-" + index + "-why";
+        Span explanation = new Span(SEAM_EXPLANATION);
+        // Off screen rather than absent: the sighted reader has the tooltip and does not need this
+        // sentence occupying a column that is short of width for conversation titles.
+        explanation.addClassName("jc-sr-only");
+        explanation.setId(explanationId);
+
+        Div seam = new Div(label, explanation);
         seam.addClassName("jc-seam");
         // A separator rather than a heading: the rows below it are not a category, they are the
         // same conversations with one fact missing, and calling it a heading would file them under
         // something the store never said.
         seam.getElement().setAttribute("role", "separator");
-        seam.getElement().setAttribute("aria-label", SEAM_EXPLANATION);
+        seam.getElement().setAttribute("aria-label", SEAM_LABEL);
+        seam.getElement().setAttribute("aria-describedby", explanationId);
         seam.setTitle(SEAM_EXPLANATION);
         return seam;
     }
@@ -661,6 +692,35 @@ class ConversationSidebar extends Nav {
      */
     void focusDrawer() {
         collapse.focus();
+    }
+
+    /**
+     * Says whether this column is currently covering the page or sitting beside it.
+     *
+     * <p>The column is one element in two arrangements. Beside the content it is navigation, and it
+     * is the page's only navigation landmark - the thing a screen reader user jumps to when they
+     * want the conversation list. Over the content it is a modal dialog in everything but its
+     * announcement: the shell makes the page behind it inert, draws a scrim across it and closes it
+     * on Escape, and until this existed it said none of that, so a reader was moved into an unnamed
+     * region with no way to hear that everything else had gone away.
+     *
+     * <p>The roles are exclusive, which is why this is one call and not two. {@code role="dialog"}
+     * on a {@code <nav>} replaces the landmark rather than adding to it, so writing it at desktop
+     * width would cost the page the navigation landmark it should have there - and claiming
+     * modality for a column that is not covering anything would be false.
+     *
+     * <p>Must run on the Vaadin UI thread. Called by the shell, which owns the arrangement.
+     *
+     * @param overlaying true while the column is drawn over the content as a drawer
+     */
+    void presentAsDrawer(boolean overlaying) {
+        if (overlaying) {
+            getElement().setAttribute("role", "dialog");
+            getElement().setAttribute("aria-modal", "true");
+            return;
+        }
+        getElement().removeAttribute("role");
+        getElement().removeAttribute("aria-modal");
     }
 
     /** Opens the list of keystrokes, from the menu that owns it or from the keyboard. */
