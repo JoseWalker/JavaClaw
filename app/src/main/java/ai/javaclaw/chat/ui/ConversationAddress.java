@@ -56,6 +56,10 @@ final class ConversationAddress {
      */
     static final String ROUTE = PREFIX + "/:" + PARAMETER;
 
+    /**
+     * Not instantiable: this is a place to keep the route grammar, not an object with behaviour.
+     * The private constructor is what stops an accidental {@code new} from suggesting otherwise.
+     */
     private ConversationAddress() {
     }
 

@@ -83,9 +83,10 @@ final class Latex {
             because ∵ dagger † percent % colon :
             """);
 
-    /*
+    /**
      * The two named wide spaces. They sit apart from the table because their value is a space
-     * character, and the table is read by splitting on spaces.
+     * character, and the table is read by splitting on spaces - putting them in it would make the
+     * pair count odd and take the class initialiser down with it.
      */
     private static final Map<String, String> WIDE_SPACES =
             Map.of("quad", "\u2003", "qquad", "\u2003\u2003");
@@ -153,6 +154,14 @@ final class Latex {
      */
     private static final class Refused extends RuntimeException {
 
+        /**
+         * Builds the refusal with no message, no cause, no suppression and no stack trace.
+         *
+         * <p>All four are off deliberately. Nothing catches this to read it - the only handler turns
+         * it into an empty {@link Optional} - and filling in a trace is what makes an exception
+         * expensive. On a page of maths this is thrown per unsupported command, so the trace would
+         * dominate the cost of deciding not to draw something.
+         */
         Refused() {
             super(null, null, false, false);
         }
@@ -161,14 +170,34 @@ final class Latex {
     /** One pass over one formula. */
     private static final class Parser {
 
+        /** The formula being read, already stripped and length-checked by {@link #render}. */
         private final String text;
+
+        /**
+         * How far into {@link #text} the parse has reached. A single cursor shared by every method
+         * below rather than an index passed around: the grammar is read strictly left to right and
+         * never backtracks, so two cursors could only ever disagree.
+         */
         private int at;
 
+        /**
+         * Starts a parse at the beginning of one formula.
+         *
+         * <p>One instance per formula, and never reused: {@link #at} is consumed by the parse, so a
+         * second call on the same parser would read from wherever the first one stopped.
+         *
+         * @param text the formula between its delimiters, without them, never null
+         */
         Parser(String text) {
             this.text = text;
         }
 
-        /** Parses until the end of the formula or the closing brace of the group being read. */
+        /**
+         * Parses until the end of the formula or the closing brace of the group being read.
+         *
+         * @param parent the element the contents are appended to
+         * @param depth current nesting, checked against {@link #MAX_DEPTH} before anything is read
+         */
         void flow(Element parent, int depth) {
             if (depth > MAX_DEPTH) {
                 throw new Refused();
@@ -185,6 +214,18 @@ final class Latex {
             }
         }
 
+        /**
+         * Reads the next thing in the formula, whatever kind of thing it turns out to be.
+         *
+         * <p>The one place the character classes are enumerated, and it ends in a refusal rather
+         * than in a default that copies the character through. That is the whole safety property of
+         * this file: a character nobody wrote a rule for is not drawn as itself, because a formula
+         * rendered with one symbol silently missing is worse than the source printed plainly.
+         *
+         * @param parent the element the result is appended to
+         * @param depth current nesting, checked against {@link #MAX_DEPTH} by the callers that recurse
+         * @throws Refused when the character is not one this renderer has a rule for
+         */
         private void atom(Element parent, int depth) {
             char c = text.charAt(at);
             if (c == '\\') {
@@ -215,6 +256,9 @@ final class Latex {
         /**
          * Reads what a script or a command argument applies to: a braced group, a command, or
          * exactly one character. This is where {@code x^2} and {@code x^{2n}} become the same shape.
+         *
+         * @param parent the element the unit is appended to
+         * @param depth current nesting
          */
         private void unit(Element parent, int depth) {
             if (depth > MAX_DEPTH || at >= text.length()) {
@@ -238,6 +282,21 @@ final class Latex {
             throw new Refused();
         }
 
+        /**
+         * Reads a backslash and whatever follows it.
+         *
+         * <p>The name is taken as the longest run of letters, which is LaTeX's own rule and the
+         * reason {@code \alpha2} is the symbol followed by a digit rather than an unknown command.
+         * A backslash with no letters after it is punctuation, not a name, and goes to
+         * {@link #punctuationCommand}.
+         *
+         * <p>Only the three commands that take arguments are switched on here; everything else is a
+         * name to be looked up, which keeps the argument-reading logic in one place per shape.
+         *
+         * @param parent the element the result is appended to
+         * @param depth current nesting
+         * @throws Refused when the command is not one this renderer draws
+         */
         private void command(Element parent, int depth) {
             int from = at + 1;
             int end = from;
@@ -258,7 +317,11 @@ final class Latex {
             }
         }
 
-        /** A backslash in front of something that is not a name: a literal, or a thin space. */
+        /**
+         * A backslash in front of something that is not a name: a literal, or a thin space.
+         *
+         * @param parent the element the literal or space is appended to
+         */
         private void punctuationCommand(Element parent) {
             if (at + 1 >= text.length()) {
                 throw new Refused();
@@ -275,6 +338,24 @@ final class Latex {
             parent.appendChild(Element.createText(literal != null ? literal : space));
         }
 
+        /**
+         * Draws a command that is known by name rather than by shape.
+         *
+         * <p>The order of the tests is the order of decreasing structure: a command that wraps a
+         * group has to be recognised before one that is only a symbol, because the group still has
+         * to be consumed. An operator is set upright rather than as letters, which is the single
+         * commonest way a naive renderer gives itself away - {@code \sin x} drawn as three italic
+         * variables.
+         *
+         * <p>The symbol table is consulted last and its miss is a refusal, never a fallback to the
+         * name itself: printing "notacommand" where a symbol was asked for is the failure mode this
+         * whole file is arranged to avoid.
+         *
+         * @param parent the element the result is appended to
+         * @param name the command name, letters only, already consumed from the input
+         * @param depth current nesting
+         * @throws Refused when the name is in none of the tables
+         */
         private void named(Element parent, String name, int depth) {
             if (UPRIGHT_GROUPS.contains(name)) {
                 wrapped(parent, "jc-math__text", depth);
@@ -298,6 +379,18 @@ final class Latex {
             parent.appendChild(Element.createText(symbol));
         }
 
+        /**
+         * Reads one braced group and appends it inside a styled span.
+         *
+         * <p>The brace is required rather than optional. {@code \text} with no group is a malformed
+         * formula, and accepting the next single character instead - which is what a lenient reader
+         * would do - turns "\textbf" into a bold "b" followed by stray letters.
+         *
+         * @param parent the element the wrapper is appended to
+         * @param className the stylesheet class that gives the group its treatment
+         * @param depth current nesting; the group's contents are read one level deeper
+         * @throws Refused when the group is missing or unterminated
+         */
         private void wrapped(Element parent, String className, int depth) {
             Element wrapper = new Element("span");
             wrapper.setAttribute("class", className);
@@ -308,6 +401,21 @@ final class Latex {
             parent.appendChild(wrapper);
         }
 
+        /**
+         * Draws {@code \frac} and its two display variants as a stacked numerator and denominator.
+         *
+         * <p>The three spellings collapse to one drawing on purpose: {@code \dfrac} and {@code
+         * \tfrac} differ from {@code \frac} only in size, and this renderer has one size. Pretending
+         * to honour a distinction it cannot draw would be a worse lie than ignoring it.
+         *
+         * <p>Both arguments are read as braced groups, so {@code \frac12} is refused rather than
+         * read as one-half - LaTeX allows the short form, but accepting it here would mean guessing
+         * where the numerator ends in a formula this renderer may not fully understand anyway.
+         *
+         * @param parent the element the fraction is appended to
+         * @param depth current nesting
+         * @throws Refused when either argument is missing or unterminated
+         */
         private void fraction(Element parent, int depth) {
             Element fraction = new Element("span");
             fraction.setAttribute("class", "jc-math__frac");
@@ -316,6 +424,18 @@ final class Latex {
             parent.appendChild(fraction);
         }
 
+        /**
+         * Draws {@code \sqrt} as a radical sign beside its radicand.
+         *
+         * <p>The optional index of {@code \sqrt[3]{x}} is not read, so that formula is refused at
+         * the bracket rather than drawn as a cube root without its three. A radical that silently
+         * loses its index is a different number, which is the one kind of error a reader has no way
+         * of noticing.
+         *
+         * @param parent the element the radical is appended to
+         * @param depth current nesting
+         * @throws Refused when the radicand is missing or unterminated
+         */
         private void root(Element parent, int depth) {
             Element radical = new Element("span");
             radical.setAttribute("class", "jc-math__sqrt");
@@ -327,7 +447,14 @@ final class Latex {
             parent.appendChild(radical);
         }
 
-        /** One braced argument of a command, wrapped in the box the stylesheet stacks. */
+        /**
+         * One braced argument of a command, wrapped in the box the stylesheet stacks.
+         *
+         * @param className the stylesheet class that positions this part of the construct
+         * @param depth current nesting; the argument's contents are read one level deeper
+         * @return the wrapper, detached
+         * @throws Refused when the argument is missing or unterminated
+         */
         private Element argument(String className, int depth) {
             Element part = new Element("span");
             part.setAttribute("class", className);
@@ -338,6 +465,18 @@ final class Latex {
             return part;
         }
 
+        /**
+         * Reads the delimiter that follows {@code \left} or {@code \right}.
+         *
+         * <p>The two are treated identically and the pairing is not checked, because this renderer
+         * draws the character at its natural size and never sizes it to its contents - so a
+         * mismatched pair produces the brackets that were written, which is what the source said.
+         * The delimiter is allow-listed against {@link #DELIMITERS} rather than copied through, so
+         * {@code \left} followed by an arbitrary character is a refusal.
+         *
+         * @param parent the element the delimiter is appended to
+         * @throws Refused when what follows is not one of the delimiters this renderer accepts
+         */
         private void delimiter(Element parent) {
             skipSpaces();
             if (at >= text.length() || DELIMITERS.indexOf(text.charAt(at)) < 0) {
@@ -351,6 +490,16 @@ final class Latex {
             }
         }
 
+        /**
+         * Reads a run of letters and sets it as a variable.
+         *
+         * <p>The whole run is taken in one element rather than one element per letter, which keeps
+         * the DOM small on a formula full of names. That is a departure from strict LaTeX, where
+         * {@code xy} is x times y and would be set with a thin space between them; the spacing is
+         * lost, the meaning is not, and this renderer does not claim typographic fidelity.
+         *
+         * @param parent the element the variable is appended to
+         */
         private void variable(Element parent) {
             int end = at;
             while (end < text.length() && Character.isLetter(text.charAt(end))) {
@@ -363,6 +512,19 @@ final class Latex {
             parent.appendChild(variable);
         }
 
+        /**
+         * Reads a run of digits and decimal points as a number.
+         *
+         * <p>Set as plain text rather than in an element, because a number is upright in maths and
+         * upright is what the surrounding text already is - a wrapper would add a node per literal
+         * for no visual difference.
+         *
+         * <p>The point is accepted anywhere in the run, so {@code 1.2.3} is read as one number. That
+         * is not a valid number, but it is also not something a renderer can improve by splitting:
+         * it draws exactly the characters that were written either way.
+         *
+         * @param parent the element the number is appended to
+         */
         private void number(Element parent) {
             int end = at;
             while (end < text.length()
@@ -373,7 +535,11 @@ final class Latex {
             at = end;
         }
 
-        /** Any run of whitespace is one space: LaTeX does not count them and neither does this. */
+        /**
+         * Any run of whitespace is one space: LaTeX does not count them and neither does this.
+         *
+         * @param parent the element the single space is appended to
+         */
         private void space(Element parent) {
             while (at < text.length() && Character.isWhitespace(text.charAt(at))) {
                 at++;
@@ -381,12 +547,31 @@ final class Latex {
             parent.appendChild(Element.createText(" "));
         }
 
+        /**
+         * Advances past whitespace without drawing anything.
+         *
+         * <p>The silent counterpart of {@link #space}, and the difference is where they are called
+         * from. Between two atoms a space is a space and is drawn; between a command and its
+         * argument it is only separation - {@code \frac {a}{b}} means what {@code \frac{a}{b}} does -
+         * so drawing it would put a gap inside a fraction.
+         */
         private void skipSpaces() {
             while (at < text.length() && Character.isWhitespace(text.charAt(at))) {
                 at++;
             }
         }
 
+        /**
+         * Consumes one required character, or refuses the whole formula.
+         *
+         * <p>Every structural brace in the grammar goes through here, which is what makes an
+         * unterminated group a refusal rather than a partial drawing. Running off the end of the
+         * input is the same failure as finding the wrong character and is treated as one, so no
+         * caller has to bounds-check before asking.
+         *
+         * @param c the character the grammar requires here
+         * @throws Refused when the input has ended or holds something else
+         */
         private void expect(char c) {
             if (at >= text.length() || text.charAt(at) != c) {
                 throw new Refused();
@@ -399,6 +584,10 @@ final class Latex {
      * Reads the symbol table: whitespace-separated pairs of command name and the character it
      * stands for. An odd number of words is a typo in the table above, and it fails here at class
      * initialisation rather than silently shifting every pair after it.
+     *
+     * @param table the text block, whitespace-separated
+     * @return the command-to-character map, immutable
+     * @throws IllegalStateException if the table does not hold an even number of words
      */
     private static Map<String, String> symbols(String table) {
         String[] words = table.strip().split("\\s+");
@@ -421,6 +610,9 @@ final class Latex {
      * with a price in it does none of those.
      *
      * @param formula the text between the delimiters
+     *
+     * @return true when the run is worth handing to the parser; false is not a claim that it is not
+     *     maths, only that this file will not guess
      */
     static boolean plausible(String formula) {
         if (formula == null || formula.isBlank() || formula.length() > 200) {
@@ -435,6 +627,10 @@ final class Latex {
         return formula.chars().anyMatch(c -> "+-=<>*/".indexOf(c) >= 0);
     }
 
+    /**
+     * Not instantiable. The tables are shared and immutable and the parse state lives in
+     * {@link Parser}, so an instance of this class would carry nothing.
+     */
     private Latex() {
     }
 }

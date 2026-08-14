@@ -61,6 +61,21 @@ final class SidebarPreference {
         session.setAttribute(ATTRIBUTE, choices);
     }
 
+    /**
+     * The session's choice map, or a fresh empty one when there is nothing usable stored.
+     *
+     * <p>Never returns null and never throws, which is the point of routing both readers through it.
+     * Session attributes are a namespace shared with the framework and with anything else in this
+     * application, so a value of an unexpected type is treated as "no preference" rather than cast:
+     * the alternative is a {@link ClassCastException} that takes down the render of a page whose
+     * only fault was a stale attribute.
+     *
+     * <p>The empty map handed back on the miss path is deliberately <em>not</em> stored. Reading a
+     * preference should not create one; {@link #store} is what puts a map into the session.
+     *
+     * @param session the session to read from, never null - callers guard first
+     * @return a mutable map from arrangement to choice, empty when nothing has been chosen
+     */
     @SuppressWarnings("unchecked")
     private static Map<LayoutMode, Boolean> choices(VaadinSession session) {
         Object stored = session.getAttribute(ATTRIBUTE);
@@ -72,6 +87,10 @@ final class SidebarPreference {
         return new EnumMap<>(LayoutMode.class);
     }
 
+    /**
+     * Not instantiable. The preference lives in the session, so an instance would own nothing and
+     * would invite a second, per-view copy of state that has to be single.
+     */
     private SidebarPreference() {
     }
 }

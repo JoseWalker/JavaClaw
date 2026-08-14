@@ -20,8 +20,19 @@ enum LayoutMode {
     /** 1024px and up. The sidebar is persistent and starts open. */
     DESKTOP(1024);
 
+    /**
+     * Inclusive lower bound of the width band this mode covers, in CSS pixels. It has to match the
+     * matching media query in {@code javaclaw.css}; that pairing is the duplication the class note
+     * above argues for, and this field is one half of it.
+     */
     private final int minimumWidth;
 
+    /**
+     * Binds a mode to the bottom of its width band. Called only by the constants above.
+     *
+     * @param minimumWidth the first width, in CSS pixels, that renders in this mode; {@link #MOBILE}
+     *     takes zero because it is the band everything narrower falls into
+     */
     LayoutMode(int minimumWidth) {
         this.minimumWidth = minimumWidth;
     }
@@ -51,12 +62,20 @@ enum LayoutMode {
      *
      * <p>Only the desktop has room to give a permanent column to navigation. Anywhere narrower the
      * reader came to read a conversation, not to browse a list.
+     *
+     * @return true only for {@link #DESKTOP}; this is the default a stored preference overrides,
+     *     not a statement about what is on screen now
      */
     boolean sidebarOpenByDefault() {
         return this == DESKTOP;
     }
 
-    /** Whether the sidebar floats over the content instead of pushing it aside. */
+    /**
+     * Whether the sidebar floats over the content instead of pushing it aside.
+     *
+     * @return true only for {@link #MOBILE}, which is what decides whether Escape is an exit and
+     *     whether the content goes inert behind the column
+     */
     boolean overlaysContent() {
         return this == MOBILE;
     }

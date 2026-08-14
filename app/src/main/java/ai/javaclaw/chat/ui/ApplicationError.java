@@ -58,6 +58,11 @@ import java.util.UUID;
  */
 public class ApplicationError extends Div implements HasErrorParameter<Exception> {
 
+    /**
+     * Where the whole failure goes, since none of it is shown. The page prints only a reference, so
+     * this log is the only surviving record of what actually threw; losing it would leave an
+     * operator holding a reference number that matches nothing.
+     */
     private static final Logger log = LoggerFactory.getLogger(ApplicationError.class);
 
     /** The page's own heading. Deliberately about the request rather than about an exception. */

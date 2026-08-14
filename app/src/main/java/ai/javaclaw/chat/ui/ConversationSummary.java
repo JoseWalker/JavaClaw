@@ -59,6 +59,18 @@ public record ConversationSummary(
         DRAFT
     }
 
+    /**
+     * Rejects an unusable row before it reaches the sidebar, and freezes the tag list.
+     *
+     * <p>Every component is read while painting a row and none has a sensible substitute: a null
+     * title has no text to draw and a blank id addresses no conversation, so both would surface far
+     * from the adapter that produced them. The tag list is copied because the caller keeps its own
+     * reference, and a row that changes shape after the sidebar has laid it out is a defect that
+     * only appears under a later, unrelated edit.
+     *
+     * @throws NullPointerException if any component is null
+     * @throws IllegalArgumentException if the id is blank, which names no conversation
+     */
     public ConversationSummary {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(title, "title");
@@ -94,6 +106,18 @@ public record ConversationSummary(
                 || tags.stream().anyMatch(tag -> contains(tag, needle));
     }
 
+    /**
+     * Case-insensitive substring test, with the folding done once by the caller.
+     *
+     * <p>Only the haystack is lowercased here: the needle arrives already folded because
+     * {@link #matches} tests it against several fields and folding it per field would repeat work on
+     * every keystroke of the search box. Passing an unfolded needle silently makes the search
+     * case-sensitive, which is why the parameter says so in its name.
+     *
+     * @param haystack field text to search, never null for a valid row
+     * @param lowercaseNeedle the query, already lowercased in {@link Locale#ROOT}
+     * @return true when the field contains the needle
+     */
     private static boolean contains(String haystack, String lowercaseNeedle) {
         return haystack.toLowerCase(Locale.ROOT).contains(lowercaseNeedle);
     }

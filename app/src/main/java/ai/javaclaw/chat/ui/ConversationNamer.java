@@ -68,6 +68,11 @@ import java.util.stream.Collectors;
 @Component
 class ConversationNamer {
 
+    /**
+     * Where a failed naming attempt goes. Naming is best effort and never surfaces to the reader -
+     * a conversation that could not be named keeps its derived title - so nothing about why the
+     * model was unreachable, refused or answered unusably survives anywhere but here.
+     */
     private static final Logger log = LoggerFactory.getLogger(ConversationNamer.class);
 
     /**
@@ -123,12 +128,22 @@ class ConversationNamer {
     private static final Pattern SHAPE = Pattern.compile(
             "[\\p{L}\\p{N}][\\p{L}\\p{N} ,.'&/+()\\[\\]#:_-]{2," + (MAX_NAME - 1) + "}");
 
+    /**
+     * Any run of blanks, flattened to a single space before the shape check runs. A model that
+     * answers on two lines has still answered with a name, and normalising first is what lets
+     * {@link #SHAPE} forbid line breaks outright rather than having to tolerate them.
+     */
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     /** Models like to wrap a one-line answer in quotation marks, and that is not part of the name. */
     private static final Pattern WRAPPING_QUOTES = Pattern.compile("^[\"'`\\u2018\\u2019\\u201c\\u201d]+"
             + "|[\"'`\\u2018\\u2019\\u201c\\u201d]+$");
 
+    /**
+     * Sentence-ending punctuation a model leaves on a name it wrote as a sentence. Stripped rather
+     * than rejected: the words are a usable name and only the full stop makes it read as prose in a
+     * column of headings, so the cheap repair is better than losing the answer.
+     */
     private static final Pattern TRAILING_STOP = Pattern.compile("[.!?:;,\\s]+$");
 
     /**
@@ -168,6 +183,14 @@ class ConversationNamer {
             them. Name something specific to this one instead.
             %s""";
 
+    /**
+     * The model, resolved lazily on each attempt rather than injected directly.
+     *
+     * <p>An {@link ObjectProvider} because a chat model need not be configured at all: JavaClaw runs
+     * with no provider set up, and a hard dependency here would stop the whole application starting
+     * over a feature whose absence is meant to be invisible. Resolving per attempt also means a
+     * provider configured after startup is picked up without a restart.
+     */
     private final ObjectProvider<ChatModel> chatModel;
 
     /**
@@ -177,8 +200,22 @@ class ConversationNamer {
      */
     private final Map<String, String> names = new ConcurrentHashMap<>();
 
+    /**
+     * How many naming calls are outstanding, checked against {@link #MAX_IN_FLIGHT} before another
+     * is started. The executor's queue is unbounded, so without this counter one render of a large
+     * store would enqueue a model call per conversation and they would all eventually run; the
+     * bound has to be applied at submission time, which is why it is a counter and not a queue size.
+     *
+     * <p>Read and written from the UI thread that submits and from the naming threads that finish,
+     * which is why it is atomic.
+     */
     private final AtomicInteger inFlight = new AtomicInteger();
 
+    /**
+     * Who to tell when a conversation acquires a name. Copy-on-write because registration and
+     * removal happen on UI threads while the list is iterated from a naming thread, and the list is
+     * tiny and read far more often than it changes - one entry per attached sidebar.
+     */
     private final List<Runnable> listeners = new CopyOnWriteArrayList<>();
 
     /**
@@ -196,6 +233,16 @@ class ConversationNamer {
         return thread;
     });
 
+    /**
+     * Builds the single application-scoped namer. Spring supplies the provider.
+     *
+     * <p>Nothing is started here. The executor's threads are created on demand, so an application
+     * where nobody opens the UI never spins one up, and an application with no chat model
+     * configured resolves the provider to nothing at the first attempt rather than failing to start.
+     *
+     * @param chatModel the provider for the configured chat model; may resolve to nothing, which is
+     *     a supported configuration and not an error
+     */
     ConversationNamer(ObjectProvider<ChatModel> chatModel) {
         this.chatModel = chatModel;
     }
@@ -272,6 +319,10 @@ class ConversationNamer {
      * <p>Every failure lands in the same place: the conversation stays marked as asked-about with no
      * name, and the caller's own derivation keeps the row labelled. A model that is missing, slow,
      * broken or off-format is therefore not an error the reader ever sees.
+     *
+     * @param conversationId the conversation being named
+     * @param question the opening question, already excerpted
+     * @param answer the first reply, already excerpted
      */
     private void nameNow(String conversationId, String question, String answer) {
         try {
@@ -299,6 +350,21 @@ class ConversationNamer {
         }
     }
 
+    /**
+     * One blocking round trip to the model.
+     *
+     * <p>Deliberately thin, and deliberately does not judge what came back: the shape rules live in
+     * {@link #usableName(String)} so that both the first attempt and the retry are held to the same
+     * standard by the same code. A null response is passed through as null rather than turned into
+     * an empty string, because "the model returned nothing" and "the model returned blank text" are
+     * the same outcome to the caller and neither is a name.
+     *
+     * <p>Runs on a naming thread, never on the Vaadin UI thread.
+     *
+     * @param model the resolved chat model
+     * @param prompt the whole instruction, already formatted
+     * @return the model's text, or null when there was no response to read
+     */
     private static String ask(ChatModel model, String prompt) {
         ChatResponse response = model.call(new Prompt(prompt));
         return response == null ? null : response.getResult().getOutput().getText();
@@ -311,6 +377,8 @@ class ConversationNamer {
      * and a check followed by an unsynchronised write would let both through - which is precisely
      * the collision this exists to catch.
      *
+     * @param conversationId the conversation claiming the name
+     * @param name the candidate, already shape-checked
      * @return true when the name was free and is now this conversation's
      */
     private synchronized boolean claim(String conversationId, String name) {
@@ -323,7 +391,12 @@ class ConversationNamer {
         return true;
     }
 
-    /** The names already handed out, as a list the instruction can quote back at the model. */
+    /**
+     * The names already handed out, as a list the instruction can quote back at the model.
+     *
+     * @return the names, one per line and bounded by {@link #MAX_QUOTED_NAMES}, or an empty string
+     *     when nothing has been named yet - in which case the caller must not append the retry at all
+     */
     private synchronized String takenNames() {
         return names.values().stream()
                 .filter(name -> !name.isEmpty())
@@ -333,7 +406,12 @@ class ConversationNamer {
                 .collect(Collectors.joining("\n"));
     }
 
-    /** Records a name and tells whoever is drawing rows. */
+    /**
+     * Records a name and tells whoever is drawing rows.
+     *
+     * @param conversationId the conversation being named
+     * @param name the accepted name, or {@link #DECLINED} to record that asking produced nothing
+     */
     private void record(String conversationId, String name) {
         names.put(conversationId, name);
         listeners.forEach(ConversationNamer::notifyQuietly);
@@ -343,7 +421,10 @@ class ConversationNamer {
      * A listener that throws is a listener, not a naming failure.
      *
      * <p>One detached UI must not stop the others hearing about the name, and must not lose the name
-     * that was already recorded - so the throw stops here rather than unwinding into {@link #accept}.
+     * that was already recorded - so the throw stops here rather than unwinding into
+     * {@link #record(String, String)}, which has already written the name by the time listeners run.
+     *
+     * @param listener one registered callback, run on the thread that produced the name
      */
     private static void notifyQuietly(Runnable listener) {
         try {
@@ -384,12 +465,26 @@ class ConversationNamer {
         return Optional.of(flat);
     }
 
-    /** As much of a message as is worth sending, on one line. */
+    /**
+     * As much of a message as is worth sending, on one line.
+     *
+     * @param text the message, never null
+     * @return the message flattened to one line and cut to {@link #MAX_EXCERPT}; never null, and
+     *     empty when the message was blank
+     */
     private static String excerpt(String text) {
         String flat = WHITESPACE.matcher(text).replaceAll(" ").strip();
         return flat.length() > MAX_EXCERPT ? flat.substring(0, MAX_EXCERPT) : flat;
     }
 
+    /**
+     * Stops the naming threads when the application context shuts down.
+     *
+     * <p>{@code shutdownNow} rather than a graceful {@code shutdown} and await: an outstanding
+     * naming call is a blocking round trip to a model that may take seconds and whose only product
+     * is a nicer row label, so waiting on it would delay shutdown for something nobody is going to
+     * see. The names already recorded are lost with the process either way - see the class note.
+     */
     @PreDestroy
     void stop() {
         executor.shutdownNow();

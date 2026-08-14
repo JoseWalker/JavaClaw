@@ -61,6 +61,39 @@ bootRun {
     workingDir = rootProject.projectDir
 }
 
+// ':app:javadoc' runs at Gradle's default member level, "protected", so it never looks at a
+// private method, constructor or field. That makes it unable to observe most of what the coding
+// standard asks for: deleting every private docblock in ai.javaclaw.chat.ui leaves ':app:javadoc'
+// reporting exactly the same warning count, because at "protected" it generates pages for 11 of
+// that package's 37 types and skips the rest. A check that stays green while the property it
+// exists to protect is broken is worse than no check, so this task makes the strict measurement
+// reproducible from a clean clone with one command instead of a locally pasted init script.
+//
+// It is registered as a separate task rather than folded into 'javadoc' deliberately. Raising the
+// member level on 'javadoc' itself would change the output of everybody's build and immediately
+// surface 122 warnings that predate any current change, in files unrelated to it. 'strictJavadoc'
+// is additive: no task depends on it, './gradlew build' does not run it, and 'javadoc' keeps
+// producing exactly what it produced before.
+//
+// It reports rather than enforces. Javadoc only fails a build on errors, and '-Werror' is not an
+// option while the 122 pre-existing warnings are still there, so this task cannot yet be wired
+// into a CI gate. Once those are cleaned up, adding '-Werror' here turns it into one without any
+// other change.
+//
+// -Xmaxwarns and -Xmaxerrs are lifted past javac's default cap of 100 because the tool otherwise
+// stops counting and prints a truncated "100 warnings", which would silently understate how much
+// a regression actually broke.
+tasks.register('strictJavadoc', Javadoc) {
+    group = 'documentation'
+    description = 'Runs javadoc at PRIVATE member level, so private members are checked for documentation too.'
+    source = sourceSets.main.allJava
+    classpath = sourceSets.main.compileClasspath
+    destinationDir = layout.buildDirectory.dir('docs/strict-javadoc').get().asFile
+    options.memberLevel = JavadocMemberLevel.PRIVATE
+    options.addStringOption('Xmaxwarns', '10000')
+    options.addStringOption('Xmaxerrs', '10000')
+}
+
 jib {
     to {
         image = 'jobrunr.io/javaclaw'

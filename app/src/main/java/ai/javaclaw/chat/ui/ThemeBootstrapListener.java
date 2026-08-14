@@ -27,6 +27,14 @@ import org.jsoup.nodes.Element;
 class ThemeBootstrapListener implements VaadinServiceInitListener {
 
     /**
+     * Built once by {@link ChatUiConfiguration} and by nothing else. Written out rather than left
+     * implicit so it can record that this listener holds no state: it serves every bootstrap request
+     * concurrently, and the only per-request value it needs is read from the current session.
+     */
+    ThemeBootstrapListener() {
+    }
+
+    /**
      * Both schemes, in the order that makes light the default when a user agent honours only the
      * first. Never derived from a request, so there is nothing here to interpolate.
      */
@@ -37,6 +45,18 @@ class ThemeBootstrapListener implements VaadinServiceInitListener {
         event.addIndexHtmlRequestListener(this::stampChosenTheme);
     }
 
+    /**
+     * Adapts Vaadin's response callback to {@link #stamp}, resolving the session on the way.
+     *
+     * <p>The session lookup happens here rather than inside {@code stamp} so that the assertion about
+     * the served markup can be made against a plain document and an explicit choice, with no session
+     * to set up. A missing choice is passed through as null, which {@code stamp} reads as "leave the
+     * stylesheet's media query in charge" - the default has to stay unstamped or it would win.
+     *
+     * <p>Runs on the request thread building the bootstrap page, not on a UI thread.
+     *
+     * @param response the index page Vaadin is about to send
+     */
     private void stampChosenTheme(IndexHtmlResponse response) {
         stamp(response.getDocument(),
                 ThemePreference.stored(VaadinSession.getCurrent()).orElse(null));

@@ -97,6 +97,16 @@ class UserMenu extends Div {
             }
             """;
 
+    /**
+     * Builds the whole control - trigger, panel and every item - in one go.
+     *
+     * <p>Assembled in the constructor rather than lazily on first open because the panel's contents
+     * are fixed: there is no data to wait for, and a lazily built popover is a popover whose first
+     * open is measurably slower and whose accessibility wiring has a window in which it is missing.
+     *
+     * <p>Must run on the Vaadin UI thread, like any component construction that is about to be added
+     * to a live layout.
+     */
     UserMenu() {
         addClassName("jc-user");
 
@@ -183,6 +193,21 @@ class UserMenu extends Div {
                 """);
     }
 
+    /**
+     * Adds one entry to the panel, wired to close the menu before it acts.
+     *
+     * <p>The ordering is the reason this is a helper rather than four inline lambdas. Everything an
+     * item opens covers the panel, and a popover left open underneath a dialog stays in the tab
+     * order beneath it, so closing has to happen first and has to happen the same way every time.
+     * Writing it once is what keeps a later fifth item from getting it wrong.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param panel the container the entry is appended to
+     * @param menu the popover to close before the action runs
+     * @param label the entry's visible text, which is also its accessible name
+     * @param action what the entry does once the menu is out of the way
+     */
     private static void item(Div panel, Popover menu, String label, Runnable action) {
         NativeButton entry = new NativeButton(label, event -> {
             // Closed first: what every item opens covers the panel, and an overlay left open behind
@@ -232,6 +257,8 @@ class UserMenu extends Div {
      * shorter list and a plain statement of what the store cannot yet answer. A build note is
      * something read once, and this is where things read once belong - not pinned above the fold in
      * the navigation column, which is where it used to live.
+     *
+     * @return a fresh dialog each call, closed; the caller opens it
      */
     private static Dialog aboutDialog() {
         Div body = new Div();

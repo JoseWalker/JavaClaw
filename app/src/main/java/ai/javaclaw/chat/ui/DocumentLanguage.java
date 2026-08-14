@@ -39,6 +39,14 @@ import org.jsoup.nodes.Element;
 class DocumentLanguage implements VaadinServiceInitListener {
 
     /**
+     * Built once by {@link ChatUiConfiguration} and by nothing else. Written out rather than left
+     * implicit so it can record that this listener is stateless: it is invoked concurrently for
+     * every bootstrap request, and holding per-request state here would be a data race.
+     */
+    DocumentLanguage() {
+    }
+
+    /**
      * The language every string in this interface is written in.
      *
      * <p>A bare language subtag rather than a region: this is English, and it is not any country's
@@ -51,6 +59,17 @@ class DocumentLanguage implements VaadinServiceInitListener {
         event.addIndexHtmlRequestListener(this::declareLanguage);
     }
 
+    /**
+     * Adapts Vaadin's response callback to {@link #pin}, which is the part worth testing.
+     *
+     * <p>It exists only to unwrap the document: keeping the response type out of {@code pin} is what
+     * lets the assertion about the served markup run against a plain parsed document rather than a
+     * mocked servlet stack.
+     *
+     * <p>Runs on the request thread that is building the bootstrap page, not on a UI thread.
+     *
+     * @param response the index page Vaadin is about to send
+     */
     private void declareLanguage(IndexHtmlResponse response) {
         pin(response.getDocument());
     }

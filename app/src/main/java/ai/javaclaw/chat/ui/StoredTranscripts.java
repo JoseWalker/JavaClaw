@@ -56,6 +56,11 @@ import java.util.regex.Pattern;
 @Component
 class StoredTranscripts implements ConversationTranscripts {
 
+    /**
+     * Where a refused or unreadable transcript goes. Every failure path in this class degrades to an
+     * empty conversation on screen, which is indistinguishable from a conversation that really is
+     * empty - so the log is the only place the difference is recorded.
+     */
     private static final Logger log = LoggerFactory.getLogger(StoredTranscripts.class);
 
     /** The shape {@link #newTurnId()} produces, and the only shape read back off disk. */
@@ -68,12 +73,36 @@ class StoredTranscripts implements ConversationTranscripts {
      */
     private static final int MAX_TURNS = 5_000;
 
+    /**
+     * The extension every transcript file carries. Appended by this class and never taken from a
+     * conversation id, which is exactly why {@link ConversationIds} forbids a dot in one: the id
+     * cannot bring its own extension along and change what kind of file is being written.
+     */
     private static final String SUFFIX = ".json";
 
+    /**
+     * The one directory transcripts may live in, already normalised. Every resolved path is checked
+     * to still be inside it, which is the containment half of the defence the class note describes.
+     */
     private final Path transcriptsDir;
+
+    /** Used to confirm a conversation is one this application knows about before adopting it. */
     private final ConversationDirectory directory;
+
+    /** The chat store a conversation is adopted from the first time its transcript is asked for. */
     private final ChatMemoryRepository memory;
+
+    /**
+     * Spring's configured mapper, shared rather than constructed here so that a transcript is read
+     * and written with the same settings as everything else in the application.
+     */
     private final ObjectMapper json;
+
+    /**
+     * The source of turn ids. {@link SecureRandom} rather than a counter because a turn id has to be
+     * unique across restarts and across a file adopted from another channel, and a counter would
+     * have to be recovered from the file it is meant to be writing. Thread-safe by contract.
+     */
     private final SecureRandom random = new SecureRandom();
 
     /**
@@ -85,6 +114,22 @@ class StoredTranscripts implements ConversationTranscripts {
      */
     private final Object lock = new Object();
 
+    /**
+     * Resolves the transcripts directory once and holds the collaborators. Spring supplies all four.
+     *
+     * <p>The directory is normalised here, at construction, rather than on each access: it is the
+     * base every later containment check is made against, and a base that still contained
+     * {@code ..} segments would make those checks meaningless. The directory is deliberately not
+     * created here - a store that is only read from should not leave a folder behind on a machine
+     * where nobody opened the UI.
+     *
+     * @param workspaceDir the agent workspace root, from configuration
+     * @param directory the conversation directory, consulted before adopting a conversation
+     * @param memory the chat store an unseen conversation is adopted from
+     * @param json the application's configured object mapper
+     * @throws IOException if the workspace resource cannot be resolved to a filesystem path, which
+     *     is a configuration fault worth failing startup over rather than degrading past
+     */
     StoredTranscripts(@Value("${agent.workspace:Unknown}") Resource workspaceDir,
                       ConversationDirectory directory,
                       ChatMemoryRepository memory,
@@ -111,6 +156,9 @@ class StoredTranscripts implements ConversationTranscripts {
     /**
      * The turns of one conversation, adopting it from the chat store the first time it is asked
      * for. Must be called under {@link #lock}.
+     *
+     * @param id a well-formed conversation id
+     * @return the turns, or an empty list when there is no transcript and none could be adopted
      */
     private List<TranscriptTurn> load(String id) {
         Path file = fileFor(id);
@@ -134,6 +182,11 @@ class StoredTranscripts implements ConversationTranscripts {
      * takes responsibility for a conversation, and a conversation adopted but not written would be
      * re-adopted after the next context-window truncation, folding it back to the shortened view
      * every single time.
+     *
+     * @param id a well-formed conversation id
+     * @return the adopted turns, or an empty list when the conversation is unknown to the directory,
+     *     holds nothing, or could not be written down - an adoption that was not persisted is
+     *     reported as nothing rather than as turns that will be adopted again
      */
     private List<TranscriptTurn> adopt(String id) {
         List<TranscriptTurn> adopted = directory.transcript(id).stream()
@@ -148,6 +201,18 @@ class StoredTranscripts implements ConversationTranscripts {
     }
 
     /**
+     * Parses one transcript file, refusing it whole if any part of it is not a turn.
+     *
+     * <p>Null and empty mean opposite things here, which is why null is the failure value rather
+     * than an empty list. An empty list is a transcript with no turns in it; null is a file that
+     * could not be read as a transcript at all, and the caller moves that one aside instead of
+     * showing the reader a conversation that appears to have been erased.
+     *
+     * <p>All-or-nothing on purpose: a file whose third entry is unrecognised is not read as the two
+     * that parsed, because a transcript quietly missing a turn is a conversation that reads as
+     * though something else was said.
+     *
+     * @param file a path already checked to be inside the transcripts directory
      * @return the turns held in this file, or null when it could not be read as a transcript
      */
     private List<TranscriptTurn> read(Path file) {
@@ -178,6 +243,7 @@ class StoredTranscripts implements ConversationTranscripts {
      * read, because a transcript silently missing its third turn is a conversation that reads as
      * though something else was said.
      *
+     * @param node one entry of the parsed file, of whatever JSON shape it happens to be
      * @return the turn, or null when this entry is not one
      */
     private static TranscriptTurn toTurn(JsonNode node) {
@@ -296,6 +362,19 @@ class StoredTranscripts implements ConversationTranscripts {
         }
     }
 
+    /**
+     * Where a turn sits in the transcript, by id rather than by position.
+     *
+     * <p>A linear scan, and deliberately not an index kept alongside the list. The transcript is
+     * bounded by {@link #MAX_TURNS} and is re-read from disk on every mutation, so any index would
+     * have to be rebuilt each time it was consulted; and the caller is editing a turn the reader
+     * chose, which is an interaction, not a loop.
+     *
+     * @param turns the transcript as loaded, never null
+     * @param turnId the id to look for, as minted by {@link #newTurnId()}
+     * @return the position, or -1 when no turn carries that id - which is what a stale browser tab
+     *     asking about a turn that has since been rewritten looks like
+     */
     private static int indexOf(List<TranscriptTurn> turns, String turnId) {
         for (int i = 0; i < turns.size(); i++) {
             if (turns.get(i).id().equals(turnId)) {
@@ -313,6 +392,8 @@ class StoredTranscripts implements ConversationTranscripts {
      * passing a pre-trimmed list would be this UI quietly adopting the very truncation it keeps a
      * transcript in order to survive.
      *
+     * @param id a well-formed conversation id
+     * @param surviving the turns the transcript still holds, in order
      * @return true when the history now matches, false when it could not be rewritten
      */
     private boolean rewriteContext(String id, List<TranscriptTurn> surviving) {
@@ -334,6 +415,18 @@ class StoredTranscripts implements ConversationTranscripts {
         }
     }
 
+    /**
+     * Projects a transcript turn back to the chat store's own message type.
+     *
+     * <p>The two roles a transcript can hold map exactly onto the two message kinds the store needs
+     * for a replay, so the mapping is total and cannot fail. It is written as a conditional rather
+     * than a switch precisely because {@link ConversationMessage.Role} has two constants and adding
+     * a third would have to be a decision about what the agent's history should contain, not a
+     * branch quietly filled in here.
+     *
+     * @param turn one turn of the surviving transcript
+     * @return the equivalent message for the agent's history, never null
+     */
     private static Message toMessage(TranscriptTurn turn) {
         return turn.role() == ConversationMessage.Role.USER
                 ? new UserMessage(turn.text())
@@ -347,6 +440,8 @@ class StoredTranscripts implements ConversationTranscripts {
      * mid-write leaves the previous transcript intact rather than a half-written one - the file is
      * the only copy of everything the context window has already dropped.
      *
+     * @param id a well-formed conversation id
+     * @param turns the whole transcript; an empty list removes the file rather than writing one
      * @return true when the transcript on disk now says exactly this
      */
     private boolean write(String id, List<TranscriptTurn> turns) {
@@ -382,6 +477,21 @@ class StoredTranscripts implements ConversationTranscripts {
         }
     }
 
+    /**
+     * Moves a file into place, preferring an atomic move and never falling back to a copy.
+     *
+     * <p>The atomic move is what makes a mid-write crash leave the previous transcript intact
+     * instead of a truncated one, and the transcript is the only copy of everything the context
+     * window has already dropped. Not every filesystem can promise it - a container bind mount and
+     * some network filesystems cannot - so the fallback is a replacing move, which is still a single
+     * call and still never leaves the destination open and half written.
+     *
+     * @param from the temporary file, in the same directory as the destination so the move stays
+     *     within one filesystem and can be atomic at all
+     * @param to the destination, replaced if it exists
+     * @throws IOException if neither move succeeds, which the caller reports as a failed write
+     *     rather than silently accepting as a saved transcript
+     */
     private static void move(Path from, Path to) throws IOException {
         try {
             Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -398,6 +508,8 @@ class StoredTranscripts implements ConversationTranscripts {
      * <p>Not deleted, and not overwritten in place. Whatever is in it is the only record of the
      * exchanges the context window has already dropped, and a file this class cannot read is still
      * a file a person can.
+     *
+     * @param file the unparseable transcript, already checked to be inside the transcripts directory
      */
     private void quarantine(Path file) {
         Path aside = file.resolveSibling(file.getFileName() + ".unreadable-"
@@ -420,6 +532,7 @@ class StoredTranscripts implements ConversationTranscripts {
      * door, and it is here because the shape and the filesystem are two different authorities on
      * what a name means.
      *
+     * @param id a conversation id, which is re-checked here rather than trusted from the caller
      * @return the file, or null when the id does not resolve inside this store
      */
     private Path fileFor(String id) {
@@ -438,6 +551,8 @@ class StoredTranscripts implements ConversationTranscripts {
      * before it could be incremented and would then be wrong for every conversation that was
      * rewound. Nothing depends on it being unguessable, but it does have to survive two tabs
      * appending in the same millisecond.
+     *
+     * @return sixteen lowercase hex characters, matching {@link #TURN_ID}
      */
     private String newTurnId() {
         byte[] bytes = new byte[8];

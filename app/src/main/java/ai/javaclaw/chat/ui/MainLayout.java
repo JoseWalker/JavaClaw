@@ -73,6 +73,11 @@ import java.util.Optional;
  */
 public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver {
 
+    /**
+     * What the bar says before a conversation has a name. Deliberately not "Untitled" or blank: the
+     * heading is the page's only level-one heading, and a reader navigating by heading has to land
+     * on something that says where they are.
+     */
     private static final String DEFAULT_TITLE = "New chat";
 
     /**
@@ -92,7 +97,19 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      */
     private final transient ConversationDirectory directory;
 
+    /**
+     * The conversation column. Transient because it holds a reference to the directory, which is an
+     * application bean and has no business being written into a passivated session.
+     */
     private final transient ConversationSidebar sidebar;
+
+    /**
+     * The landmark the routed view is placed into, and the target of the skip link.
+     *
+     * <p>A {@code <main>} rather than a div, because that is what makes the skip link's destination
+     * a landmark rather than an arbitrary anchor - and there is exactly one of them per document,
+     * which is why the routed view is swapped inside it rather than replacing it.
+     */
     private final Main content = new Main();
 
     /**
@@ -114,7 +131,15 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      */
     private final Anchor skipLink = createSkipLink();
 
+    /**
+     * The dimming layer behind the drawer on a narrow window, and the thing a tap outside it closes.
+     *
+     * <p>Present in the document at every width rather than added when the drawer opens: it is
+     * hidden by the stylesheet outside the mobile band, and creating it on open would mean the
+     * element that closes the drawer does not exist until after the drawer has finished animating.
+     */
     private final Div scrim = new Div();
+
     /**
      * The name of the conversation on screen, and the page's only level-one heading.
      *
@@ -145,10 +170,22 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      */
     private static final String MODEL_LINE_PREFIX = "Next answer: ";
 
+    /**
+     * The caveat that goes with {@link #MODEL_LINE_PREFIX}, stated in full rather than implied.
+     *
+     * <p>It says the one thing the line cannot: that earlier answers in this conversation were not
+     * recorded with the model that wrote them. That limitation is real and this shell cannot fix it,
+     * so the honest response is to say so where the claim is made rather than to let the reader
+     * infer something stronger from a bare model name.
+     */
     private static final String MODEL_LINE_SCOPE =
             "The model configured now, which is what will answer the next question. Earlier answers "
                     + "in this conversation are not recorded with the model that wrote them.";
 
+    /**
+     * The line under the heading that names the configured model. Empty when no model is configured,
+     * because a subtitle that says nothing is better than one that names a model that is not there.
+     */
     private final Span subtitle = new Span();
 
     /**
@@ -169,8 +206,21 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
     private static final String OFFLINE_NOTICE =
             "You are offline. JavaClaw cannot be reached until the connection returns.";
 
+    /**
+     * The control that shows and hides the conversation column, at every width.
+     *
+     * <p>One control rather than one per arrangement, because it is the same action: what changes
+     * between the drawer and the persistent column is where the column goes, not what the button
+     * does. Held as a field because its accessible name and {@code aria-expanded} have to be
+     * rewritten whenever the column's state changes - see {@link #writeSidebarState}.
+     */
     private final Button drawerToggle = new Button();
 
+    /**
+     * The arrangement currently on screen. Seeded with desktop, which is what the stylesheet assumes
+     * before the browser has reported a width, so the server's belief and the first paint agree.
+     * Only meaningful once {@link #modeKnown} is true.
+     */
     private LayoutMode mode = LayoutMode.DESKTOP;
 
     /**
@@ -198,6 +248,14 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      */
     private Boolean sidebarOpen;
 
+    /**
+     * The browser-resize subscription, kept so it can be cancelled on detach.
+     *
+     * <p>Vaadin does not remove a page-level resize listener when the component that added it goes
+     * away, so a shell that detached without cancelling would leave a listener holding this instance
+     * for the life of the session - one per navigation. Transient because a registration belongs to
+     * a live connection and means nothing in a deserialised session.
+     */
     private transient Registration resizeRegistration;
 
     /**
@@ -240,6 +298,25 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
     /** How many written conversations {@link #written} remembers before it drops its oldest. */
     private static final int WRITTEN_REMEMBERED = 64;
 
+    /**
+     * Builds the whole shell and opens it on a fresh chat. Vaadin and Spring supply the arguments.
+     *
+     * <p>Everything is assembled here rather than on attach because the shell has no state to wait
+     * for: the column reads the directory itself and the model line comes from configuration. What
+     * is deliberately <em>not</em> done here is deciding the sidebar's state - that needs the
+     * browser's width, which is only known after the first round trip, and guessing it is what
+     * would produce a visible flip on the first paint.
+     *
+     * <p>Ordering inside is load bearing in one place: the rename subscription is registered only
+     * after the active conversation and the title are set, because the column reports immediately on
+     * its first render and a callback that fired into half-built state would name the wrong thread.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param directory the conversation directory, used to resolve an address that names a
+     *     conversation nobody clicked on; never null
+     * @param environment application configuration, read once for the model line; never null
+     */
     public MainLayout(ConversationDirectory directory, Environment environment) {
         // Opening on a new chat rather than resuming one. The shell used to drop the reader straight
         // into the shared web conversation, which was the only way to reach any history at all; now
@@ -301,6 +378,8 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      * <p>Router-ignored on purpose: Vaadin claims same-origin links, and a routed
      * {@code /ui/#jc-main-content} is a navigation to a view that does not exist. The reader would
      * be skipped into an empty page.
+     *
+     * @return the link, detached; built once, from the field initialiser
      */
     private static Anchor createSkipLink() {
         Anchor link = new Anchor("#" + CONTENT_ID, "Skip to the conversation");
@@ -319,6 +398,8 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      * <p>It carries no time. It used to report {@code now}, which is the same thing every stored row
      * says about a conversation the store really did write - a modification claim on a conversation
      * that has never been modified, because nothing has happened to it yet.
+     *
+     * @return a summary marked as a draft, with a fresh conversation id and no time
      */
     private static ConversationSummary newChat() {
         return new ConversationSummary(ConversationIds.newConversationId(), DEFAULT_TITLE,
@@ -328,6 +409,18 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
 
     // ------------------------------------------------------------------ structure
 
+    /**
+     * Assembles the bar above the content: the drawer toggle, the heading, and the theme control.
+     *
+     * <p>Split out of the constructor because it is the one part of the shell whose internal
+     * ordering is dictated by the stylesheet rather than by logic - the three children are what the
+     * narrow arrangement's grid tracks are numbered against, so their order is load bearing and
+     * belongs somewhere a reader can see it whole.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @return the bar, already classed and wired; called once, from the constructor
+     */
     private Component createTopBar() {
         drawerToggle.setIcon(Icons.glyph(Icons.MENU));
         drawerToggle.addClassNames("jc-icon-button", "jc-topbar__toggle");
@@ -586,6 +679,22 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
         super.onDetach(detachEvent);
     }
 
+    /**
+     * Adopts the arrangement a reported viewport width calls for.
+     *
+     * <p>Guarded by {@link #modeKnown} rather than by the width alone, and the guard is the point:
+     * the first report from a desktop-sized window produces the same mode the field was seeded with,
+     * so a plain equality check would return early and the reader's stored preference for that
+     * width would never be applied.
+     *
+     * <p>Re-reads the preference on every real change instead of carrying the old one across,
+     * because a choice is stored per arrangement - returning to a width means returning to the
+     * layout that was left there, not to whatever the last width was set to.
+     *
+     * <p>Must run on the Vaadin UI thread; it is called from the browser's resize callback.
+     *
+     * @param width the viewport width in CSS pixels, as reported by the browser
+     */
     private void applyViewportWidth(int width) {
         LayoutMode next = LayoutMode.forWidth(width);
         if (modeKnown && next == mode) {
@@ -604,6 +713,17 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
 
     // ------------------------------------------------------------------ sidebar state
 
+    /**
+     * Flips the conversation column, treating the flip as a choice the reader has made.
+     *
+     * <p>Routed through {@link #rememberSidebarState} rather than writing the DOM directly, so a
+     * press of the toggle is stored for the current arrangement like any other choice. The negation
+     * is taken from {@link #isSidebarOpen()}, which resolves the null "no preference yet" case to
+     * the arrangement's default - so the first press flips away from what is on screen rather than
+     * from an unset field.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
     private void toggleSidebar() {
         rememberSidebarState(!isSidebarOpen());
     }
@@ -657,7 +777,7 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      * an overlay returns to. It is the trigger in the menu case and the reader's previous position
      * in the keyboard case, which is the same rule stated once rather than two special cases.
      *
-     * <h2>Why the overlay is found in the composed path and not with closest()</h2>
+     * <h4>Why the overlay is found in the composed path and not with closest()</h4>
      *
      * <p>The rule was right and the test for it was not, which is why the shortcuts dialog went on
      * losing focus after this existed. A Vaadin dialog keeps its overlay in the dialog element's
@@ -675,7 +795,7 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      * {@code -overlay} disqualifies the whole path, which covers the dialog, the popover and
      * anything Vaadin adds later without this having to be edited again.
      *
-     * <h2>Why the memory starts somewhere rather than empty</h2>
+     * <h4>Why the memory starts somewhere rather than empty</h4>
      *
      * <p>The reader most likely to press Ctrl/Cmd + / is the one who has touched nothing yet, and
      * with an empty memory closing the dialog restored nothing and left them on the document body.
@@ -683,6 +803,75 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      * back to - and it is passed as the element rather than as a selector, so the id cannot be
      * renamed out from under it. The same value covers a remembered element that has since been
      * removed from the document, which is the other way this used to end in silence.
+     *
+     * <h4>Why the same memory also reports facts</h4>
+     *
+     * <p>{@code __jcRestoreFocus} is a command: an overlay closing knows the caret is its to give
+     * back. Nothing else on this page knows that. A view whose turn has just ended would like the
+     * caret back and has no right to it - the model finishing is not something the reader did, and
+     * taking focus on an event the reader did not cause is WCAG 2.1 SC 3.2.1 - so what it needs is
+     * not a way to move the caret but a way to find out whether moving it would take anything away
+     * from anybody. Answering that needs this memory, so the report is published from here, where
+     * the memory means what this script says it means.
+     *
+     * <p>{@code __jcFocusFacts} reports and decides nothing, and the difference is the whole point.
+     * A first version of this decided here, in one function that looked around and answered yes or
+     * no, and nothing in this repository could execute a line of it: the rule could be inverted or
+     * pinned to a constant with the entire test suite still green. What it returns now is eight
+     * property reads, named for the components of {@code CaretPlace}, which is where the rule lives
+     * and where every clause of it is a case a test can state.
+     *
+     * <p>The line is drawn at composition, and the second attempt at drawing it had to move. It
+     * first reported {@code caretHeld}, computed here by a five-clause {@code usable()} predicate -
+     * one name, one browser property mentioned, and a whole policy behind it. That passes the only
+     * check this side can be given, which is that an observation still names the property it is
+     * about, while an inverted {@code !usable(...)} hands the caret to the composer on every
+     * finished turn. So the four {@code caret*} observations are reported raw and the composition
+     * is {@code CaretPlace#caretHeld}, where dropping any one clause fails a named test.
+     *
+     * <p>Those four are a snapshot, and their meaning depends on the send control's disable having
+     * reached the browser before the question runs; see {@code ChatView#offerTheCaretBack} for why
+     * that holds and what must not be done to it.
+     *
+     * <p>{@code readerSteppedAway} exists because two situations are otherwise identical and want
+     * opposite answers. A reader dropped when the composer disabled the control they were on, and a
+     * reader who gave the caret up themselves before that happened, both end with a loose caret and
+     * a memory still naming a control inside the composer. Only the departure separates them, so
+     * the departure is recorded as it happens: a {@code focusout} with no {@code relatedTarget} is
+     * focus going nowhere, and it is read as the reader letting go only when what they left still
+     * worked. A control disabled under a reader has already stopped being usable by the time it
+     * lets go, so it does not register - and if the browser does not blur it at all, no
+     * {@code focusout} fires and there is nothing to register either. Both readings arrive at the
+     * same place, which is what the discrimination needs.
+     *
+     * <p>The selection is reported collapsed or not, and the server reads an uncollapsed one as
+     * somebody reading. Focusing anything collapses a selection, and a reader halfway through
+     * dragging over an answer to copy it has not asked for that.
+     *
+     * <h4>What a browser was observed doing, rather than assumed to do</h4>
+     *
+     * <p>None of the above had ever been run when it was first written, and two of its three
+     * claims about browsers were wrong. It was measured against this application in Chromium 136,
+     * driving real turns and reading what this script returned at the moment the server asked; the
+     * cases are recorded in {@link CaretPlace}. Three results are worth keeping next to the code
+     * that depends on them.
+     *
+     * <p>A reader who clicks a paragraph of an answer is <em>not</em> left holding nothing. The
+     * transcript carries {@code tabindex="0"} because it is a log region, so the click focuses the
+     * transcript itself, the {@code focusout} carries it as {@code relatedTarget}, and no departure
+     * is recorded. That reader is turned away by {@code lastChoiceInRegion} - which the same click
+     * has just moved out of the composer - and not by {@code readerSteppedAway} at all. The earlier
+     * claim that no {@code focusin} fires on that path was simply false.
+     *
+     * <p>A reader standing on the send control when the end of a turn disables it is <em>not</em>
+     * blurred. The control stays {@code document.activeElement} carrying {@code disabled === true}.
+     * That is the case {@code caretDisabled} exists for, and it is the case a rule built on
+     * {@code caretOnRoot} alone would miss - it would report the caret as held, and the reader
+     * would never get it back.
+     *
+     * <p>Focus that genuinely goes nowhere does arrive as {@code relatedTarget === null} and is
+     * recorded. That is the one arrangement in which every other clause of the rule says yes and
+     * only {@code readerSteppedAway} says no, so it is the fact's whole justification, and it holds.
      *
      * <p>Installed once per document and guarded on its own flag: this shell can be re-attached,
      * and a second listener would not be wrong so much as pointless. Client-side because it is the
@@ -722,7 +911,78 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
                         return;
                     }
                     window.__jcFocusReturn = target;
+                    // The reader is holding something again, so whatever they gave up before is no
+                    // longer what describes them.
+                    window.__jcFocusGivenUp = false;
                 }, true);
+                // Whether a node is something the reader could still be acting through. Anything
+                // that is not an element, is out of the document, is one of the two document roots,
+                // or has been disabled counts as nothing. Vaadin disables a control by setting both
+                // the property and aria-disabled, and a custom element with the attribute is not
+                // natively disabled at all, so both are asked.
+                //
+                // This is the last judgement left on this side, and it is here because it cannot be
+                // anywhere else: it answers a question about the moment a focusout fired, and by
+                // the time the server could be asked that moment is gone. The same question at
+                // report time is answered on the server, from the four caret observations below.
+                const usable = (node) => !!node
+                        && typeof node.getAttribute === 'function'
+                        && node.isConnected === true
+                        && node !== document.body
+                        && node !== document.documentElement
+                        && node.disabled !== true
+                        && node.getAttribute('aria-disabled') !== 'true';
+                // The reader letting go of the caret, which is the only thing that separates being
+                // dropped from walking off. A focusout with no relatedTarget is focus going nowhere:
+                // a click on text that cannot take it, or the page losing focus entirely. Recorded
+                // only when what they left still worked - a control disabled under a reader has
+                // already stopped being usable by the time it lets go, and that is the case this
+                // must not read as a departure.
+                document.addEventListener('focusout', (event) => {
+                    if (event.relatedTarget) {
+                        return;
+                    }
+                    const path = typeof event.composedPath === 'function'
+                            ? event.composedPath()
+                            : [event.target];
+                    if (inOverlay(path)) {
+                        return;
+                    }
+                    if (!usable(path[0])) {
+                        return;
+                    }
+                    window.__jcFocusGivenUp = true;
+                }, true);
+                // What the browser can see and the server cannot, reported and not judged. The rule
+                // these observations feed lives on the server, where it can be executed by a test;
+                // this side reads properties, and every name here is a component of the record that
+                // decodes it.
+                //
+                // One observation per name, each a single property read. That is a requirement and
+                // not a style: KeyboardAccessTest checks that every one still names the browser
+                // property it claims to be about, which is the only thing on this side that notices
+                // an observation quietly replaced by a constant - and a text check can go no
+                // further than that, so there must be nothing further here for it to miss. The four
+                // caret observations used to be one 'caretHeld: usable(document.activeElement)',
+                // which passed exactly that check while an inverted '!usable' would have handed the
+                // caret to the composer on every finished turn with the whole suite green. Nothing
+                // may be composed back into this object: an && added here is a clause no test can
+                // reach. Nothing here may throw either, because a script that throws leaves the
+                // answer unsent and an unsent answer is a caret that never comes back.
+                window.__jcFocusFacts = (region) => ({
+                    regionAttached: !!region && region.isConnected === true,
+                    caretConnected: document.activeElement?.isConnected === true,
+                    caretOnRoot: document.activeElement === document.body
+                            || document.activeElement === document.documentElement,
+                    caretDisabled: document.activeElement?.disabled === true,
+                    caretAriaDisabled:
+                            document.activeElement?.getAttribute?.('aria-disabled') === 'true',
+                    selectionCollapsed: window.getSelection()?.isCollapsed === true,
+                    lastChoiceInRegion: !!window.__jcFocusReturn
+                            && typeof region?.contains === 'function'
+                            && region.contains(window.__jcFocusReturn) === true,
+                    readerSteppedAway: window.__jcFocusGivenUp === true
+                });
                 // The one way back, so an overlay that closes does not get to invent its own.
                 window.__jcRestoreFocus = () => {
                     const remembered = window.__jcFocusReturn;
@@ -801,6 +1061,16 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
                 """, connection.getElement(), OFFLINE_NOTICE);
     }
 
+    /**
+     * Shuts the conversation column, as a choice rather than as a side effect.
+     *
+     * <p>Handed to the column itself and to the scrim, so that closing from inside the drawer and
+     * tapping outside it take the same path as the toggle and are stored the same way. Unconditional
+     * on purpose: closing an already-closed column costs nothing, and a guard here would be a second
+     * place for the three entry points to disagree.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
     private void closeSidebar() {
         rememberSidebarState(false);
     }
@@ -810,6 +1080,8 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      *
      * <p>Stored against the arrangement it was made in, so returning to a width is returning to the
      * layout that was left there rather than to the default.
+     *
+     * @param open whether the column should be showing from now on, at this width
      */
     private void rememberSidebarState(boolean open) {
         sidebarOpen = open;
@@ -817,7 +1089,12 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
         writeSidebarState(true);
     }
 
-    /** The session, or null outside a UI - which is how the shell is instantiated in tests. */
+    /**
+     * The session, or null outside a UI - which is how the shell is instantiated in tests.
+     *
+     * @return the session, or null when the shell is not attached to a UI - every caller tolerates
+     *     null rather than guarding, which is what keeps the shell constructible in a test
+     */
     private VaadinSession session() {
         return getUI().map(UI::getSession).orElse(null);
     }
@@ -829,6 +1106,16 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
         }
     }
 
+    /**
+     * Whether the column is showing, resolving "no preference yet" to the arrangement's default.
+     *
+     * <p>The one place that collapses the three-valued {@link #sidebarOpen} to a boolean. Null is
+     * not "closed" - it means nothing is written to the DOM and the stylesheet decides - so a caller
+     * that read the field directly would treat a first-visit desktop, where the column is open, as
+     * shut. Everything that needs a yes or no asks here instead.
+     *
+     * @return true when the column is on screen right now
+     */
     private boolean isSidebarOpen() {
         return sidebarOpen != null ? sidebarOpen : mode.sidebarOpenByDefault();
     }
@@ -911,6 +1198,8 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
      * <p>The bar is renamed and the view below it is rebound in the same call, because those two are
      * the same claim: a title that changed while the transcript did not is the shell telling the
      * reader they are somewhere they are not.
+     *
+     * @param summary the conversation the column reported, never null
      */
     private void onConversationSelected(ConversationSummary summary) {
         active = summary;
@@ -928,7 +1217,7 @@ public class MainLayout extends Div implements RouterLayout, BeforeEnterObserver
     /**
      * Writes the open conversation into the address bar, so a reload comes back to it.
      *
-     * <h2>Why a selection is pushed and a promotion is replaced</h2>
+     * <h4>Why a selection is pushed and a promotion is replaced</h4>
      *
      * <p>Every selection used to be replaced, on the argument that choosing a row is moving sideways
      * within one screen rather than going anywhere. The argument is reasonable and the measurement

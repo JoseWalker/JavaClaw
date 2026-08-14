@@ -19,6 +19,10 @@ import java.util.function.Consumer;
  */
 final class ThemePreference {
 
+    /**
+     * Not instantiable. The preference itself lives in the session, so an instance of this class
+     * would own nothing; the private constructor keeps that from being discovered by experiment.
+     */
     private ThemePreference() {
     }
 
@@ -27,6 +31,9 @@ final class ThemePreference {
      *
      * @param session the session to read from; {@code null} is tolerated so callers running outside
      *                a request (or during a teardown) do not have to guard every call site
+     *
+     * @return the chosen mode, or empty while no explicit choice has been made - which is not the
+     *     same as light: with no choice stored the stylesheet's media query is authoritative
      */
     static Optional<ThemeMode> stored(VaadinSession session) {
         if (session == null) {
@@ -37,6 +44,10 @@ final class ThemePreference {
 
     /**
      * Remembers an explicit choice for the rest of the session.
+     *
+     * @param session the session to write to; null is tolerated so callers running outside a
+     *     request do not have to guard every call site
+     * @param mode the chosen scheme; null is tolerated and stores nothing
      */
     static void store(VaadinSession session, ThemeMode mode) {
         if (session == null || mode == null) {
@@ -50,6 +61,9 @@ final class ThemePreference {
      *
      * <p>The value is passed as a parameter rather than concatenated into the script, so a mode can
      * never be interpolated into executable JavaScript.
+     *
+     * @param ui the UI to write the attribute on; null is tolerated and does nothing
+     * @param mode the scheme to apply; null is tolerated and does nothing
      */
     static void apply(UI ui, ThemeMode mode) {
         if (ui == null || mode == null) {
@@ -84,6 +98,8 @@ final class ThemePreference {
      *
      * <p>The script takes no parameters and reads nothing but the document, so there is no value
      * here that could be interpolated into it.
+     *
+     * @param ui the UI whose page carries the meta tag; null is tolerated and does nothing
      */
     static void syncBrowserChrome(UI ui) {
         if (ui == null) {
@@ -124,6 +140,9 @@ final class ThemePreference {
      * <p>An explicit choice is authoritative and is re-applied, because a full page load may have
      * dropped the attribute. Otherwise the browser is asked what the operating system prefers; the
      * answer is only used to label the toggle, since the stylesheet has already applied it.
+     *
+     * @param ui the UI to resolve against; null is tolerated and never calls back
+     * @param onResolved handed the scheme actually on screen, on the UI thread; null is tolerated
      */
     static void resolveEffective(UI ui, Consumer<ThemeMode> onResolved) {
         if (ui == null || onResolved == null) {

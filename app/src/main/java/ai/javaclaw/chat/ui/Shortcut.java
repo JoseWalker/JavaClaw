@@ -57,19 +57,42 @@ enum Shortcut {
     ESCAPE(Chord.plain(Key.ESCAPE, "Escape", "Esc"),
             "Stop the answer being written, or close the conversation drawer"),
 
+    /**
+     * Takes Shift because Ctrl/Cmd + M is a browser command on some platforms, and M rather than L
+     * because the conventional Shift + Escape is eaten by Chrome before the page sees it - see the
+     * class note.
+     */
     FOCUS_COMPOSER(Chord.primary(Key.KEY_M, "M", true), "Put the caret in the message box"),
 
+    /** Ctrl/Cmd + Shift + O, which is what the two nearest comparable products call a new chat. */
     NEW_CHAT(Chord.primary(Key.KEY_O, "O", true), "Start a new chat"),
 
+    /** Ctrl/Cmd + B, which is what a sidebar toggle is called in every editor worth copying. */
     TOGGLE_SIDEBAR(Chord.primary(Key.KEY_B, "B", false), "Show or hide the conversation list"),
 
+    /** Ctrl/Cmd + K, the near-universal "find something in this application" chord. */
     SEARCH(Chord.primary(Key.KEY_K, "K", false), "Search the conversation list"),
 
+    /** The entry that shows the rest, which is why it is the one that has to be guessable. */
     HELP(Chord.primary(Key.SLASH, "/", false), "Show this list of shortcuts");
 
+    /** The keystroke itself, in every vocabulary it has to be expressed in. See {@link Chord}. */
     private final Chord chord;
+
+    /**
+     * What the shortcut does, in the imperative, as one line a reader can scan in the help dialog.
+     * Written here rather than at the registration site so the dialog and the behaviour cannot
+     * disagree - which is the defect the class note records having shipped twice.
+     */
     private final String description;
 
+    /**
+     * Binds a shortcut to its chord and its description. Called only by the constants above.
+     *
+     * @param chord the keystroke, built through one of the {@link Chord} factories so that the
+     *     global-versus-field distinction is decided here rather than at a registration site
+     * @param description what the keystroke does, in the imperative
+     */
     Shortcut(Chord chord, String description) {
         this.chord = chord;
         this.description = description;
@@ -91,20 +114,62 @@ enum Shortcut {
     private record Chord(Key key, String ariaKey, String label, boolean primary, boolean shift,
                          boolean global) {
 
+        /**
+         * A page-level chord on the platform-appropriate primary modifier.
+         *
+         * <p>The three factories exist so that a constant declares what kind of shortcut it is
+         * rather than filling in six positional arguments, where {@code true, false, true} is a
+         * mistake nobody can see in review. This one is the case where the label and the ARIA name
+         * coincide, because a letter key is called the same thing in both vocabularies.
+         *
+         * @param key what Vaadin matches on
+         * @param label the single key, as both shown and announced - "M", "B", "/"
+         * @param shift true when Shift is part of the chord
+         * @return a global chord that registers on Control and on Meta
+         */
         static Chord primary(Key key, String label, boolean shift) {
             return new Chord(key, label, label, true, shift, true);
         }
 
+        /**
+         * A page-level chord with no modifier, where the shown and announced names differ.
+         *
+         * <p>The only reason this factory takes both names is Escape: {@code aria-keyshortcuts} is
+         * defined in terms of {@code KeyboardEvent.key} and must say "Escape", while a reader
+         * expects to see "Esc" on the page. Collapsing the two would make one of them wrong.
+         *
+         * @param key what Vaadin matches on
+         * @param ariaKey the {@code KeyboardEvent.key} value
+         * @param label what the reader is shown
+         * @return a global chord with no modifiers
+         */
         static Chord plain(Key key, String ariaKey, String label) {
             return new Chord(key, ariaKey, label, false, false, true);
         }
 
+        /**
+         * A chord that belongs to whichever field the caret is in, and never to the page.
+         *
+         * <p>Marked not global so {@link Shortcut#register} refuses it outright. Enter registered on
+         * the shell would send the composer's draft from anywhere on the page - from the sidebar's
+         * search box included - so the distinction is enforced by the type rather than remembered.
+         *
+         * @param key what the field's own listener matches on
+         * @param label the key as both shown and announced
+         * @param shift true when Shift is part of the chord
+         * @return a field-scoped chord, which cannot be registered globally
+         */
         static Chord field(Key key, String label, boolean shift) {
             return new Chord(key, label, label, false, shift, false);
         }
     }
 
-    /** What the reader is shown, in the dialog and in the tooltips. */
+    /**
+     * What the reader is shown, in the dialog and in the tooltips.
+     *
+     * @return the chord as a reader sees it, never null; a primary-modifier chord spells out both
+     *     modifiers, because the server cannot tell which keyboard is reading it
+     */
     String keys() {
         StringBuilder shown = new StringBuilder();
         if (chord.primary()) {
@@ -118,6 +183,11 @@ enum Shortcut {
         return shown.append(chord.label()).toString();
     }
 
+    /**
+     * What this keystroke does, for the help dialog.
+     *
+     * @return one imperative line, never null and never blank
+     */
     String description() {
         return description;
     }
@@ -136,6 +206,18 @@ enum Shortcut {
         return token("");
     }
 
+    /**
+     * One {@code aria-keyshortcuts} token, built in the order the specification fixes.
+     *
+     * <p>Modifiers have to appear before the key and Shift after the primary one; assistive
+     * technology matches the string, so a token assembled in another order is a shortcut that is
+     * never announced. Writing it in one place is what keeps the Control and the Meta token from
+     * being assembled two slightly different ways.
+     *
+     * @param primaryModifier {@code "Control+"}, {@code "Meta+"}, or an empty string for a chord
+     *     that has no primary modifier
+     * @return a single token, never null
+     */
     private String token(String primaryModifier) {
         return primaryModifier + (chord.shift() ? "Shift+" : "") + chord.ariaKey();
     }
@@ -154,7 +236,11 @@ enum Shortcut {
         return action + " (" + keys() + ")";
     }
 
-    /** False for a keystroke that belongs to a field rather than to the page. */
+    /**
+     * False for a keystroke that belongs to a field rather than to the page.
+     *
+     * @return false for a keystroke that belongs to a field, which {@link #register} refuses
+     */
     boolean isGlobal() {
         return chord.global();
     }
@@ -188,17 +274,42 @@ enum Shortcut {
                         with(KeyModifier.META)));
     }
 
+    /**
+     * The modifiers for a chord that has no primary one.
+     *
+     * <p>An empty array rather than null, because Vaadin's varargs registration treats the absence
+     * of modifiers as "this key with nothing held" - which is exactly what is wanted - while null
+     * would be a dereference inside the framework.
+     *
+     * @return a fresh array each call, since the caller passes it into a varargs parameter that is
+     *     free to retain it
+     */
     private KeyModifier[] modifiers() {
         return chord.shift() ? new KeyModifier[] {KeyModifier.SHIFT} : new KeyModifier[0];
     }
 
+    /**
+     * The modifiers for one half of a primary-modifier registration.
+     *
+     * <p>Vaadin matches modifiers exactly, so a chord that means "Ctrl on a PC, Cmd on a Mac" is two
+     * registrations rather than one; this builds the modifier set for whichever half is being
+     * registered. Getting it wrong ships an application that works on half the keyboards it runs on,
+     * which is why neither call site assembles the array itself.
+     *
+     * @param primaryModifier {@link KeyModifier#CONTROL} or {@link KeyModifier#META}
+     * @return a fresh array each call, for the same varargs reason as {@link #modifiers()}
+     */
     private KeyModifier[] with(KeyModifier primaryModifier) {
         return chord.shift()
                 ? new KeyModifier[] {primaryModifier, KeyModifier.SHIFT}
                 : new KeyModifier[] {primaryModifier};
     }
 
-    /** Names a control with its own keystroke, for whoever is listening rather than looking. */
+    /**
+     * Names a control with its own keystroke, for whoever is listening rather than looking.
+     *
+     * @param control the element to name, which is the control the keystroke operates
+     */
     void announceOn(Element control) {
         control.setAttribute("aria-keyshortcuts", ariaKeyShortcuts());
     }

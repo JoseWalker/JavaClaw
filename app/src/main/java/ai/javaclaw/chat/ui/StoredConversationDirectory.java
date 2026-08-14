@@ -50,14 +50,42 @@ import java.util.Optional;
 @Component
 class StoredConversationDirectory implements ConversationDirectory {
 
+    /**
+     * Where a conversation that cannot be summarised goes. Reading the store is the one thing here
+     * that can fail per row, and the sidebar's answer is to drop that row rather than fail the
+     * column - so this log is the only place the reason survives.
+     */
     private static final Logger log = LoggerFactory.getLogger(StoredConversationDirectory.class);
 
+    /**
+     * How much of the opening message becomes the row's excerpt. Long enough to recognise a
+     * conversation by, short enough that the column stays two lines; the sidebar also clamps
+     * visually, but cutting here is what keeps a pasted file out of the summary object entirely.
+     */
     private static final int PREVIEW_LENGTH = 160;
 
+    /** The chat store, and the only source of what was actually said in a conversation. */
     private final ChatMemoryRepository repository;
+
+    /** Recency, for ordering the column. Reports only what this process watched happen. */
     private final ConversationActivity activity;
+
+    /** Asked-for names, and the thing that tells this adapter a row's title has changed. */
     private final ConversationNamer namer;
 
+    /**
+     * Wires the adapter to the three things it reads. Spring supplies all of them.
+     *
+     * <p>Three collaborators rather than one because each answers a different question and only one
+     * of them is the store: what was said, when it was last used, and what it has been named. An
+     * adapter that reached into the store's file layout for the other two would trade a missing
+     * feature for a coupling that breaks the day the store changes format - which is the trade the
+     * class note above refuses.
+     *
+     * @param repository the chat store, never null
+     * @param activity the in-process record of when each conversation was last used, never null
+     * @param namer the component that names conversations and announces when one is named
+     */
     StoredConversationDirectory(ChatMemoryRepository repository, ConversationActivity activity,
                                 ConversationNamer namer) {
         this.repository = repository;
@@ -114,6 +142,9 @@ class StoredConversationDirectory implements ConversationDirectory {
      * <p>Anything that is neither the reader nor the assistant - a system prompt, a tool exchange -
      * is dropped rather than guessed at. It was never meant to be read as part of the conversation,
      * and painting it as one of the two speakers would attribute it to somebody.
+     *
+     * @param message one message as the store holds it
+     * @return the turn, or empty for anything that is neither the reader nor the assistant
      */
     private static Optional<ConversationMessage> toTurn(Message message) {
         String text = message.getText();
@@ -132,6 +163,9 @@ class StoredConversationDirectory implements ConversationDirectory {
      *
      * <p>The sidebar is chrome around the chat; it must not be the reason the page fails to render.
      * A failure here is logged once and degrades to an empty section rather than propagating.
+     *
+     * @return the rows, in store order; empty when the store is unreadable, which is deliberately
+     *     indistinguishable from an empty store as far as the column is concerned
      */
     private List<ConversationSummary> storedConversations() {
         List<String> ids;
@@ -148,6 +182,22 @@ class StoredConversationDirectory implements ConversationDirectory {
         return rows;
     }
 
+    /**
+     * Turns one stored conversation into a row, or decides it is not one.
+     *
+     * <p>Every reason a row can be absent is answered here rather than by the caller, because they
+     * are all the same answer: a conversation that cannot be described is left out of the column
+     * instead of drawn as a placeholder. An id that does not match the minted shape is a foreign
+     * file or a bug and is never offered as somewhere to click; an empty conversation has no opening
+     * message to title itself with.
+     *
+     * <p>Has one deliberate side effect: it asks {@link ConversationNamer} to name the conversation,
+     * without waiting. The row is drawn now under its derived title and redrawn when a name arrives,
+     * so a slow or unreachable model costs the sidebar nothing.
+     *
+     * @param id a conversation id from the store, possibly malformed
+     * @return the row, or empty when this conversation is not something the column can honestly show
+     */
     private Optional<ConversationSummary> summarise(String id) {
         if (!ConversationIds.isWellFormed(id)) {
             // Nothing this application writes can produce such an id, so one in the store is either
@@ -185,7 +235,13 @@ class StoredConversationDirectory implements ConversationDirectory {
                 ConversationSummary.Source.STORED));
     }
 
-    /** One read of the store, with a conversation that cannot be read treated as absent. */
+    /**
+     * One read of the store, with a conversation that cannot be read treated as absent.
+     *
+     * @param id a well-formed conversation id
+     * @return the messages, or an empty list when the conversation cannot be read - never null, so
+     *     the caller needs no guard
+     */
     private List<Message> messagesOf(String id) {
         try {
             List<Message> messages = repository.findByConversationId(id);
@@ -196,6 +252,18 @@ class StoredConversationDirectory implements ConversationDirectory {
         }
     }
 
+    /**
+     * The first message of a kind that actually said something.
+     *
+     * <p>Blank texts are skipped rather than returned, because a stored turn with no text is not the
+     * opening question and titling a row from it would produce an empty title where a usable one was
+     * two messages further down.
+     *
+     * @param messages the conversation as stored, in order
+     * @param type the kind of turn wanted
+     * @return the text, or the empty string when the conversation has no such turn - never null, so
+     *     callers can pass it straight to the titling code without a guard
+     */
     private static String firstText(List<Message> messages, MessageType type) {
         return messages.stream()
                 .filter(message -> message.getMessageType() == type)
@@ -205,6 +273,20 @@ class StoredConversationDirectory implements ConversationDirectory {
                 .orElse("");
     }
 
+    /**
+     * The most recent thing said in the conversation, which is what the row's excerpt shows.
+     *
+     * <p>System turns are excluded on purpose. A system prompt is instructions the application gave
+     * the model, not something anyone in the conversation said, and it is often the longest text in
+     * the store - so a column that included it would show the same block of scaffolding as the
+     * excerpt of every row.
+     *
+     * <p>A forward scan rather than a reverse one because the store hands back a list whose reverse
+     * iteration is not guaranteed to be cheap, and the lists are bounded by the memory window.
+     *
+     * @param messages the conversation as stored, in order
+     * @return the last non-blank, non-system text, or the empty string when there is none
+     */
     private static String lastText(List<Message> messages) {
         String text = "";
         for (Message message : messages) {
@@ -223,6 +305,10 @@ class StoredConversationDirectory implements ConversationDirectory {
      * before the first dash is genuine metadata rather than a guess, and it is the closest thing to
      * a folder the store has today. It is not a folder the reader can create, move or rename, and
      * the sidebar does not offer to: a control for something the store cannot record is a promise.
+     *
+     * @param id a well-formed conversation id
+     * @return the channel name, capitalised; a fallback heading when the id carries no channel,
+     *     never null and never blank
      */
     private static String channelOf(String id) {
         int dash = id.indexOf('-');

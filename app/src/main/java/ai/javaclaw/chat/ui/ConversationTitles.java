@@ -133,6 +133,11 @@ final class ConversationTitles {
     /** What a row is called when the opening message was nothing but scaffolding. */
     private static final String UNTITLED = "Untitled chat";
 
+    /**
+     * Any run of blanks, collapsed to a single space before anything else is matched. Normalising
+     * first is what lets every pattern below be written against single spaces: a message pasted with
+     * newlines or a tab inside it would otherwise slip past a lead-in that only knows about " ".
+     */
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     /**
@@ -175,14 +180,29 @@ final class ConversationTitles {
             Pattern.compile("[.,;]?\\s*each\\s+(?:one\\s+)?(?:starting|beginning|prefixed)\\s[^,;]{0,64}$",
                     Pattern.CASE_INSENSITIVE));
 
+    /**
+     * An article left stranded at the front once a lead-in has been cut away, as in "explain the
+     * virtual thread scheduler" becoming "the virtual thread scheduler". Dropped because a column of
+     * titles reads as a list, and a list entry does not start with an article.
+     */
     private static final Pattern LEADING_ARTICLE =
             Pattern.compile("^(?:the|a|an)\\s+", Pattern.CASE_INSENSITIVE);
 
+    /**
+     * Punctuation the title inherited from the sentence it was cut out of. A trailing question mark
+     * or comma is a fragment of the original message rather than part of the subject, and the hyphen
+     * is in the set because cutting a trailer off "explain X - in markdown" leaves one behind.
+     */
     private static final Pattern TRAILING_PUNCTUATION = Pattern.compile("[\\s.,;:!?-]+$");
 
     /** Rewrite passes. Four is one more than the deepest nesting any real instruction has shown. */
     private static final int MAX_PASSES = 4;
 
+    /**
+     * Not instantiable. Titling is a pure function of the opening message and the patterns above are
+     * shared, compiled once; an instance would hold no state and would only invite per-view copies
+     * of patterns that are expensive to build and identical everywhere.
+     */
     private ConversationTitles() {
     }
 
@@ -228,6 +248,10 @@ final class ConversationTitles {
      *
      * <p>Split out from the loop so a pattern that matches what a previous pattern uncovered gets its
      * turn, without any single pattern being allowed to run away.
+     *
+     * @param text the title so far, never null
+     * @return the text with at most one of each pattern removed; the same string when nothing
+     *     matched, which is what ends the loop
      */
     private static String stripOnce(String text) {
         String working = text;
@@ -250,7 +274,7 @@ final class ConversationTitles {
     /**
      * Labels for the rows a column is about to paint, no two of them alike where they are drawn.
      *
-     * <h2>The rule</h2>
+     * <h4>The rule</h4>
      *
      * <p>No two returned labels agree over their first {@link #DRAWN} display columns. Not "no two
      * are equal": a set can be pairwise unequal and still render as twenty identical rows, because
@@ -261,7 +285,7 @@ final class ConversationTitles {
      * differ at every width wider than twenty-nine - so the guarantee survives whatever the browser's
      * own ellipsis does on top of the character budget used here.
      *
-     * <h2>How it is reached</h2>
+     * <h4>How it is reached</h4>
      *
      * <p>Rows whose labels are identical over the drawn part are gathered and shown what they do not
      * share, escalating only as far as each cluster forces:
@@ -283,7 +307,7 @@ final class ConversationTitles {
      * is the first thing that clipping removes. A marker that can be truncated away is a decoration
      * that usually works.
      *
-     * <h2>What this gives up</h2>
+     * <h4>What this gives up</h4>
      *
      * <p>Two threads whose difference is their closing word, past the drawn part of the column, come
      * back with their opening elided: the reader loses the front of a name they could not read
@@ -291,7 +315,7 @@ final class ConversationTitles {
      * the name of a thread the column was drawing in full - a set that fits is left exactly as it is,
      * because a difference that is on screen needs no help to be seen.
      *
-     * <h2>Bounds and ordering</h2>
+     * <h4>Bounds and ordering</h4>
      *
      * <p>Numbering follows the order the column draws, so a given row's marker does not change
      * between two renders of the same list. Every returned label fits {@code limit} in characters and
@@ -424,7 +448,7 @@ final class ConversationTitles {
      *       one whole word of subject stands in front of the difference.</li>
      * </ul>
      *
-     * <h2>What the last two rounds of this defect were</h2>
+     * <h4>What the last two rounds of this defect were</h4>
      *
      * <p>The word bound is the second half of the fix and the half that was missing. The character
      * count alone is measured against the <em>longest</em> title in the cluster, which says nothing
@@ -603,7 +627,14 @@ final class ConversationTitles {
         return graphemeFloor(first, shared);
     }
 
-    /** How many leading {@code char}s two strings have in common, which may split a character. */
+    /**
+     * How many leading {@code char}s two strings have in common, which may split a character.
+     *
+     * @param left one string, never null
+     * @param right the other, never null
+     * @return the shared length in {@code char}s, which may fall inside a surrogate pair - callers
+     *     that cut here must widen to a code point boundary first
+     */
     private static int commonPrefixLength(String left, String right) {
         int bound = Math.min(left.length(), right.length());
         int index = 0;
@@ -841,6 +872,10 @@ final class ConversationTitles {
      *
      * <p>The rest is left exactly as typed: upper-casing further would turn "iPhone" into "IPhone"
      * and "JVM" is already right.
+     *
+     * @param text the title, never null
+     * @return the same text with its first letter upper-cased; the same string when it is empty or
+     *     already starts with a non-letter
      */
     private static String capitalise(String text) {
         char first = text.charAt(0);

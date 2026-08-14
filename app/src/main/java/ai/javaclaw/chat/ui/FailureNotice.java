@@ -103,8 +103,19 @@ enum FailureNotice {
     /** Words that mean the provider was reached and did not finish in time. */
     private static final String[] TIMEOUT_WORDS = {"timed out", "timeout"};
 
+    /**
+     * The whole of what a reader is shown for this class of failure. Written here, in the source,
+     * rather than assembled at the call site: a sentence that is a constant cannot be interpolated
+     * with an upstream string by a later edit, which is the leak this enum exists to prevent.
+     */
     private final String sentence;
 
+    /**
+     * Binds a constant to its sentence. Called only by the constant declarations above.
+     *
+     * @param sentence one complete sentence, never null and never blank, containing nothing that
+     *     came from a provider - the compiler cannot enforce that, so it is the reviewer's rule
+     */
     FailureNotice(String sentence) {
         this.sentence = sentence;
     }

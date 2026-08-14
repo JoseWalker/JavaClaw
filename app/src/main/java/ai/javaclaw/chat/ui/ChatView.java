@@ -19,6 +19,7 @@ import com.vaadin.flow.dom.Element;
 import com.vaadin.flow.router.PageTitle;
 import com.vaadin.flow.router.Route;
 import com.vaadin.flow.router.RouteAlias;
+import tools.jackson.databind.JsonNode;
 
 import java.util.List;
 import java.util.Optional;
@@ -95,6 +96,11 @@ public class ChatView extends Div implements ConversationHost {
             "Walk me through this stack trace",
             "What does this project's build do?");
 
+    /**
+     * What the composer says while an answer is being written. Present tense and about the
+     * application rather than about the control, because it explains why the send button has become
+     * a stop button - a hint that described the control would be describing what is already visible.
+     */
     private static final String BUSY_HINT = "JavaClaw is responding";
 
     /** Names the log region, which was announced as "log" and nothing else before this existed. */
@@ -119,6 +125,26 @@ public class ChatView extends Div implements ConversationHost {
             """;
 
     /**
+     * Asks the shell what the browser can see about where the caret is, and asks nothing else.
+     *
+     * <p>It collects facts and decides nothing. The decision is {@link CaretPlace}, on this side,
+     * because a rule written in this string is a rule nothing in this repository can execute - which
+     * is how the first attempt at this shipped a predicate that could be inverted without a single
+     * test going red. What the browser is asked for is only what the server cannot know: where focus
+     * is, what is selected, and what the reader last chose for themselves.
+     *
+     * <p>The {@code typeof} guard is not decoration. This view runs on its own in every one of its
+     * tests, and can in principle be routed without the shell; with nothing installed the expression
+     * is null, and {@link CaretPlace#reportedBy} reads null as a reader who might be busy.
+     *
+     * <p>{@code $0} is the region the question is about, passed as the element rather than left as
+     * {@code this} so that a test can read which region was named. It is the whole composer and not
+     * the field: the reader this branch exists for was standing on the send control.
+     */
+    private static final String CARET_FACTS =
+            "return typeof window.__jcFocusFacts === 'function' ? window.__jcFocusFacts($0) : null";
+
+    /**
      * What the polite announcer says at each end of a turn.
      *
      * <p>Short on purpose. This is read out over whatever the reader is doing, so it says what
@@ -136,13 +162,48 @@ public class ChatView extends Div implements ConversationHost {
      * two lines are the only thing that names the change.
      */
     private static final String OPENED = "Opened ";
+
+    /** The other half of {@link #OPENED}: an empty transcript is a new chat, not a failed load. */
     private static final String NEW_CHAT = "New chat";
+
+    /**
+     * Stands in for a title in the opening announcement. A phrase rather than an empty string,
+     * because "Opened ." announces nothing and reads as a bug to whoever hears it.
+     */
     private static final String UNNAMED_CONVERSATION = "an unnamed conversation";
+
+    /**
+     * The three endings an answer can have, announced so a reader who is not watching the screen
+     * learns that the stream has stopped. They are distinct strings on purpose: "complete",
+     * "stopped" and "failed" are three different reasons to look back at the transcript, and one
+     * generic "finished" would tell a reader who stopped an answer nothing they did not know.
+     */
     private static final String ANSWER_COMPLETE = "Answer complete";
+
+    /** Announced when the reader stopped the answer themselves. See {@link #ANSWER_COMPLETE}. */
     private static final String ANSWER_STOPPED = "Answer stopped";
+
+    /**
+     * Announced when the turn ended in a failure. Says only that it failed; the sentence describing
+     * what went wrong is a {@link FailureNotice} and never anything the provider sent.
+     */
     private static final String ANSWER_FAILED = "Answer failed";
+
+    /**
+     * The send control's accessible name at rest. The control is icon-only, so this is the whole of
+     * what a screen reader has to go on, and it swaps with {@link #STOP_LABEL} while streaming -
+     * a control that changes what it does has to change what it is called.
+     */
     private static final String SEND_LABEL = "Send message";
+
+    /** The same control's name while an answer is streaming. See {@link #SEND_LABEL}. */
     private static final String STOP_LABEL = "Stop responding";
+
+    /**
+     * The floating control that returns the reader to the bottom of the transcript. Named for the
+     * destination rather than the direction: "scroll down" is a gesture, "the latest message" is
+     * where the reader wants to be.
+     */
     private static final String JUMP_LABEL = "Jump to the latest message";
 
     /**
@@ -207,18 +268,67 @@ public class ChatView extends Div implements ConversationHost {
     private static final String SWALLOW_COMPOSER_ENTER =
             "(" + COMPOSER_ENTER + ") && event.preventDefault()";
 
+    /**
+     * What answers the questions. Transient because it is an application bean and has no business
+     * being serialised into a passivated session; the same goes for the three fields below it.
+     */
     private final transient Agent agent;
+
+    /** Carries each response off the UI thread. Shared by every session in the application. */
     private final transient ExecutorService responseExecutor;
+
+    /** The durable record of the conversation, which outlives the agent's own memory window. */
     private final transient ConversationTranscripts transcripts;
+
+    /** Told when a message is sent, so the sidebar can order this conversation by recency. */
     private final transient ConversationActivity activity;
+
+    /**
+     * What every turn's controls call back into. One instance for the whole view rather than one per
+     * turn: the actions are stateless and a transcript holds many turns.
+     */
     private final transient MessageTurn.Actions turnActions = new TurnControls();
 
+    /**
+     * The scrolling region. Held because the scroll position belongs to this element and every
+     * decision about pinning, jumping and "has the reader scrolled away" is asked of it.
+     */
     private final Div transcript = new Div();
+
+    /**
+     * The turns themselves, inside {@link #transcript}. Two elements rather than one because the
+     * measure - how wide a line of prose is allowed to be - belongs to the content and the scrollbar
+     * belongs to the region; collapsing them would put the scrollbar inside the text column.
+     */
     private final Div transcriptInner = new Div();
+
+    /**
+     * The control that returns the reader to the latest message. A {@link NativeButton} because it
+     * is one element that appears and disappears with scroll position, and a Vaadin component would
+     * carry a client-side component for a control that is usually not on screen.
+     */
     private final NativeButton jump = new NativeButton();
+
+    /**
+     * What the transcript shows before a conversation has any turns. Built once at construction
+     * rather than on each empty render, because it holds the starter prompts and their listeners.
+     */
     private final Div emptyState = createEmptyState();
+
+    /** The whole composer band: the field, its chrome, and the send control. */
     private final Div composer = new Div();
+
+    /**
+     * The bordered box around the text area and the send control. Separate from {@link #composer} so
+     * the focus ring is drawn around the field and its button together rather than around the band.
+     */
     private final Div composerField = new Div();
+
+    /**
+     * The line under the composer that says what is happening - the keyboard hint at rest, the busy
+     * sentence while streaming. Its counterpart is {@link #composerOffline}; see that field for why
+     * they are two elements and not one.
+     */
     private final Span composerHint = new Span();
 
     /**
@@ -245,8 +355,26 @@ public class ChatView extends Div implements ConversationHost {
      * nothing a sighted reader is not already being shown.
      */
     private final Span announcer = new Span();
+    /**
+     * The composer itself. A text area rather than a field, because a question is often several
+     * lines and Shift + Enter has to be able to open one - see {@code COMPOSER_ENTER}.
+     */
     private final TextArea prompt = new TextArea();
+
+    /**
+     * One control that both sends and stops, rather than two.
+     *
+     * <p>Two controls would mean one of them is always disabled, and a disabled control in the place
+     * a reader reaches for is worse than a control that changes: it says the action is unavailable
+     * without saying why. This one swaps its glyph and its accessible name together - see
+     * {@link #SEND_LABEL} - so what it is called always matches what it does.
+     */
     private final Button send = new Button();
+
+    /**
+     * The icon inside {@link #send}. Held so the swap between the two states is a property write on
+     * an element the browser already has, rather than a component being replaced mid-interaction.
+     */
     private final Span sendGlyph = new Span();
 
     /**
@@ -276,6 +404,27 @@ public class ChatView extends Div implements ConversationHost {
     private transient AtomicBoolean activeTurn;
 
     /**
+     * How many times the reader has settled where the caret belongs, counted so a stale answer can
+     * be recognised.
+     *
+     * <p>{@link #offerTheCaretBack} asks the browser a question and acts on the answer a round trip
+     * later, and the reader keeps working for the whole of that round trip. Anything they do that
+     * the server sees - opening a conversation, asking a question, pressing Stop - decides where the
+     * caret belongs more recently than the answer in flight does, so it moves this on and the answer
+     * is dropped when it lands. Without it, a row clicked the instant an answer arrives pulls the
+     * caret out of the conversation column and into the composer: the exact violation
+     * {@code offerTheCaretBack} exists to prevent, arriving through {@code offerTheCaretBack}.
+     *
+     * <p>A counter rather than a flag because questions and acts interleave, and what has to be
+     * compared is "the situation this answer was asked about" with "the situation now". Wrap-around
+     * would need four billion reader acts inside one round trip.
+     *
+     * <p>Read and written on the Vaadin UI thread only, which is where every one of those acts and
+     * the answer to every question arrive.
+     */
+    private int caretEra;
+
+    /**
      * Guards the one writing-down of the streaming turn's answer.
      *
      * <p>Three parties race for it - the completion as the UI thread sees it, the same completion as
@@ -294,7 +443,20 @@ public class ChatView extends Div implements ConversationHost {
      */
     private transient AtomicReference<TranscriptTurn> activeRecord;
 
+    /**
+     * The task carrying the answer in flight, or null when nothing is streaming.
+     *
+     * <p>Kept so the stop control has something to cancel and so a second question cannot be asked
+     * over the top of the first. Null is the whole of the "idle" state; nothing else records it.
+     */
     private transient Future<?> activeResponse;
+
+    /**
+     * The turn on screen the arriving tokens are being written into, or null when nothing is
+     * streaming. Held rather than found by walking the transcript, because the transcript can be
+     * rebuilt underneath a streaming answer and a positional lookup would then write into the
+     * wrong turn.
+     */
     private transient MessageTurn activeAnswer;
 
     /**
@@ -306,6 +468,14 @@ public class ChatView extends Div implements ConversationHost {
      */
     private transient String activeAskedOf;
 
+    /**
+     * True once the scroll-pinning script has been installed on the transcript element.
+     *
+     * <p>A view is attached and detached across navigations while its elements survive, so without
+     * this the same listener would be added again on every return and the transcript would scroll
+     * once per installation. See {@link #copyInstalled} for the same reasoning applied to the other
+     * client-side script.
+     */
     private boolean scrollPinInstalled;
 
     /** Both scripts survive a re-attach, so neither is installed twice on the same element. */
@@ -334,6 +504,25 @@ public class ChatView extends Div implements ConversationHost {
      */
     private boolean transcriptLoadPending;
 
+    /**
+     * Builds the view and shows whatever the conversation it defaults to already contains.
+     *
+     * <p>{@code setStreaming(false)} is called even though nothing is streaming, because it is the
+     * single place the composer's resting appearance is defined - the send control's glyph, its
+     * accessible name and the hint line under the field. Setting them here instead would be a second
+     * definition of a state that has to have exactly one.
+     *
+     * <p>The stored turns are shown from the constructor rather than from attach so the transcript
+     * is populated in the round trip that creates it; the shell replaces the conversation a moment
+     * later if the address named a different one.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param agent what answers questions, never null
+     * @param responseExecutor carries each answer off the UI thread, never null
+     * @param transcripts the durable record of conversations, never null
+     * @param activity told when a message is sent, so the sidebar can order by recency
+     */
     public ChatView(Agent agent,
                     ExecutorService responseExecutor,
                     ConversationTranscripts transcripts,
@@ -352,6 +541,18 @@ public class ChatView extends Div implements ConversationHost {
 
     // ------------------------------------------------------------------ layout
 
+    /**
+     * Assembles the scrolling transcript region and the control that returns to its foot.
+     *
+     * <p>Split out of the constructor because almost everything here is an accessibility decision
+     * with a reason attached - the log role, the name, the tab stop - and those reasons are what a
+     * later editor needs to read before changing any of them. The comments inside are the record of
+     * what was measured; this method exists so they have somewhere to live together.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @return the transcript region; called once, from the constructor
+     */
     private Component createTranscript() {
         transcriptInner.addClassNames("jc-transcript__inner", "jc-measure");
         transcriptInner.add(emptyState);
@@ -398,6 +599,9 @@ public class ChatView extends Div implements ConversationHost {
      *
      * <p>It is drawn once and shown by the stylesheet, so appearing and disappearing costs no
      * server round trip on a container that is being scrolled.
+     *
+     * @return the control, detached and always present in the document; the stylesheet decides
+     *     when it is visible, so this is built once and never rebuilt
      */
     private Component createJumpControl() {
         jump.addClassName("jc-jump__button");
@@ -423,6 +627,8 @@ public class ChatView extends Div implements ConversationHost {
      * what that space is for. They are suggestions, not data: nothing here claims the agent has
      * done any of it, which is the difference between this and the invented conversation list the
      * sidebar used to carry.
+     *
+     * @return the empty state, built once at construction because it owns the starter listeners
      */
     private Div createEmptyState() {
         Span mark = brandMark("jc-mark--l");
@@ -448,6 +654,9 @@ public class ChatView extends Div implements ConversationHost {
      * <p>Three rather than six: a grid of suggestions is a menu to be read, and a reader who has to
      * read a menu before typing has been given a second task. Each one is a whole question, so the
      * first thing sent is something the agent can answer rather than a fragment to be clarified.
+     *
+     * @return the three starters as one component; a fresh instance, since a component belongs to
+     *     one place in one DOM
      */
     private Component createStarters() {
         Div starters = new Div();
@@ -468,6 +677,9 @@ public class ChatView extends Div implements ConversationHost {
      * <p>It fills the composer and puts the caret in it; it does not send. The reader has not agreed
      * to the question yet, a click that silently spends a model call is a click nobody can take
      * back, and half the value of a suggestion is that it can be edited before it is asked.
+     *
+     * @param text the whole question, which is both the button's face and what it fills in
+     * @return the control, detached
      */
     private Component starter(String text) {
         NativeButton button = new NativeButton(text, event -> {
@@ -481,6 +693,9 @@ public class ChatView extends Div implements ConversationHost {
     /**
      * The one brand mark, at one of its two sizes. Fill, ink and letterform live in the stylesheet
      * so the logo cannot end up rendered two different ways on the same screen.
+     *
+     * @param sizeModifier the stylesheet suffix that picks the size, never null
+     * @return a fresh span each call
      */
     private static Span brandMark(String sizeModifier) {
         Span mark = new Span("JC");
@@ -489,6 +704,17 @@ public class ChatView extends Div implements ConversationHost {
         return mark;
     }
 
+    /**
+     * Assembles the composer band: the field, its hints, and the send control.
+     *
+     * <p>Split out for the same reason as {@link #createTranscript()}. The keyboard handling in
+     * particular is the part with a history - Enter sends, Shift + Enter opens a line, and both are
+     * registered on the element rather than as component shortcuts so the field keeps its own keys.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @return the composer band; called once, from the constructor
+     */
     private Component createComposer() {
         prompt.setPlaceholder("Ask anything");
         prompt.setAriaLabel("Message");
@@ -664,6 +890,17 @@ public class ChatView extends Div implements ConversationHost {
         return getUI().map(ui -> ui.getChildren().anyMatch(ChatView::isOpenOverlay)).orElse(false);
     }
 
+    /**
+     * Whether one child of the UI is an overlay that is currently open.
+     *
+     * <p>Two types rather than a general test, because Vaadin has no common supertype for "thing on
+     * top of the page" and the alternative - inspecting tag names or the DOM - would be guessing.
+     * An overlay type this does not know about therefore reads as no overlay at all, which is the
+     * safe direction: see the caller's note on why missing one is cheaper than inventing one.
+     *
+     * @param candidate one child of the UI
+     * @return true when the candidate is an open dialog or an open popover
+     */
     private static boolean isOpenOverlay(Component candidate) {
         if (candidate instanceof Dialog dialog) {
             return dialog.isOpened();
@@ -814,7 +1051,13 @@ public class ChatView extends Div implements ConversationHost {
         if (conversation.id().equals(conversationId)) {
             return;
         }
-        stopStreaming();
+        // The reader is in the column and staying there, which is now the answer to where the caret
+        // belongs - and it outranks any answer a question asked before this click is about to bring
+        // back. See readerSettledTheCaret.
+        readerSettledTheCaret();
+        // Ended rather than stopped: the reader asked for a conversation, not for the composer, and
+        // the caret stays in the column they are browsing. See endStreamingTurn.
+        endStreamingTurn();
         // Filed while the view is still bound to the conversation being left, so the draft goes to
         // the thread it was written for rather than to the one arriving.
         rememberDraft();
@@ -844,6 +1087,7 @@ public class ChatView extends Div implements ConversationHost {
      */
     @Override
     public void enterNewConversation() {
+        readerSettledTheCaret();
         announce(NEW_CHAT);
         prompt.focus();
     }
@@ -902,7 +1146,12 @@ public class ChatView extends Div implements ConversationHost {
                 .orElse(""));
     }
 
-    /** The conversation currently bound, for the shell that chose it. */
+    /**
+     * The conversation currently bound, for the shell that chose it.
+     *
+     * @return the conversation id, never null - a view always has somewhere to be, so there is no
+     *     unbound state for the shell to have to handle
+     */
     String conversationId() {
         return conversationId;
     }
@@ -1178,6 +1427,10 @@ public class ChatView extends Div implements ConversationHost {
      * @param question the message to send, already known to be non-blank
      */
     private void ask(String question) {
+        // Asking is the reader acting in the composer, whichever of the three ways they reached it,
+        // so it settles where the caret belongs and retires any question the previous turn left in
+        // flight. See readerSettledTheCaret.
+        readerSettledTheCaret();
         emptyState.setVisible(false);
         announceTitle(question);
         // Recorded before the answer rather than after it: this is when the reader used the
@@ -1342,7 +1595,7 @@ public class ChatView extends Div implements ConversationHost {
      * matters: {@code respondTo} does not return until the whole response is complete, and holding
      * the session lock for that long would freeze the browser for the entire turn.
      *
-     * <h2>Why the answer is filed here as well as on the UI thread</h2>
+     * <h4>Why the answer is filed here as well as on the UI thread</h4>
      *
      * <p>Because the UI thread is not guaranteed to arrive. Everything an answer used to do on its
      * way into the transcript went through {@code ui.access}, including being written down, and a
@@ -1437,6 +1690,10 @@ public class ChatView extends Div implements ConversationHost {
      *
      * <p>Checked twice on purpose: once on the worker to avoid queuing work the reader has already
      * cancelled, and once inside the lock, because the stop can land between the two.
+     *
+     * @param ui the UI to run on, captured when the turn was asked
+     * @param turn the guard for this turn; false once some other path has already closed it
+     * @param update what to do on the UI thread, run at most once per turn
      */
     private void apply(UI ui, AtomicBoolean turn, Runnable update) {
         if (turn.get()) {
@@ -1452,6 +1709,8 @@ public class ChatView extends Div implements ConversationHost {
     /**
      * Releases the composer once a turn is over. Ignores a turn that is no longer the active one,
      * so a late completion cannot re-enable the composer in the middle of the next question.
+     *
+     * @param turn the guard for this turn, cleared here so nothing else can close it twice
      */
     private void finishTurn(AtomicBoolean turn) {
         if (activeTurn != turn) {
@@ -1461,30 +1720,174 @@ public class ChatView extends Div implements ConversationHost {
         // Deliberately no scroll. A reader who scrolled up during the answer is still reading it,
         // and the end of the turn is the worst possible moment to take that away; if they never
         // scrolled, the transcript is pinned and has been following the answer all along.
-        prompt.focus();
+        offerTheCaretBack();
         announceUpdate();
     }
 
     /**
-     * Stops the turn that is streaming, and tells the reader it has stopped.
+     * Takes the caret back only if this composer is the reason nobody has it.
      *
-     * <p>{@link Agent} exposes no cancellation, so what is cancelled here is this view's half of the
+     * <p>This line used to be {@code prompt.focus()}, run every time a turn ended. A turn ends
+     * because a model stopped producing tokens, which is not something the reader did, so the caret
+     * left whoever was holding it - somebody reading the answer that had just landed, somebody two
+     * rows down the conversation column - and reappeared in a field at the other end of the page.
+     * WCAG 2.1 SC 3.2.1, On Focus, and invisible to everything except a keyboard.
+     *
+     * <h4>Why the line was not simply deleted</h4>
+     *
+     * <p>Because this composer is itself the one thing at the end of a turn that can drop a reader.
+     * {@link #updateSendEnabled} disables the send control the moment a turn ends with an empty
+     * field, so a reader who tabbed to Stop and waited there is left standing on a control that has
+     * stopped working - on the document body if the browser drops them from it, on a dead button if
+     * it does not - with no way to know why their next Tab starts at the top of the page. Deleting
+     * the call would have closed one defect by leaving that one open. What is wanted is neither
+     * always nor never: it is the caret back only when taking it costs nobody anything.
+     *
+     * <h4>Why the browser is asked and the server decides</h4>
+     *
+     * <p>The server does not know where the caret is and cannot be made to - a focus that never
+     * leaves the browser produces no round trip, and one that did would cost a request per Tab. So
+     * the facts come from the browser, from the shell's own focus memory rather than from a second
+     * copy of it here, and the rule that reads them is {@link CaretPlace}, on this side, where a
+     * test can execute it. The alternative - one script that both decides and focuses - was rejected
+     * for exactly that: the rule that matters most here would live where nothing in this repository
+     * can run it, and a first version of this change shipped that way and could be inverted in
+     * either direction with the whole suite still green.
+     *
+     * <h4>What this depends on Flow for</h4>
+     *
+     * <p>On the ordering, and not by accident. {@link #clearTurn} disables the send control a few
+     * frames before this asks its question, and whether the reader dropped from that control reads
+     * as loose depends on the disable having reached the browser first. It has: both leave the
+     * server in one UIDL response, and flow-client applies every tree change in a response before it
+     * runs that response's scripts - {@code MessageHandler.processMessage}, "Invoke JS only after
+     * all tree changes have been propagated". So the question must never be moved out of the
+     * response that carries the disable: not to a separate round trip, not to an earlier
+     * {@code beforeClientResponse}, not to the page. Ask it early and the reader standing on the
+     * Stop control reads as somebody still using it, and never gets the caret back.
+     *
+     * <p>The cost is one round trip per finished turn carrying eight booleans, on a view that
+     * already exchanges one per keystroke, and a window of that same round trip in which the reader
+     * keeps working while the answer describes a page they have moved on from.
+     *
+     * <h4>What happens to an answer the reader has already overtaken</h4>
+     *
+     * <p>Half of that window is closed here and the half that is left is stated rather than hoped
+     * about. An act the server sees - a row clicked in the conversation column, a question asked, a
+     * generation stopped - reaches the server ahead of the answer and settles where the caret
+     * belongs more recently than the answer does. {@link #caretEra} is what makes those two
+     * comparable: the era is captured when the question goes out and checked when it comes back, so
+     * an answer about the page as it was before such an act is discarded rather than obeyed.
+     * Without that check, clicking a conversation the instant an answer lands pulls the caret out of
+     * the column and into the composer - through this method, which exists to stop precisely that.
+     *
+     * <p>What remains is the half the server never learns about: a Tab, or a click on something that
+     * takes focus without telling the server, inside the same round trip. That is irreducible from
+     * here - a focus that never leaves the browser produces no round trip to be ordered against -
+     * and it is only reachable on the branch where the caret was already loose, so its worst outcome
+     * is a caret pulled to the composer a moment after the reader claimed something.
+     *
+     * <p>Fails closed at every step. No UI means no browser to ask, so nothing is asked and nothing
+     * moves. No shell - a view standing on its own, which is what a test builds - leaves
+     * {@code __jcFocusFacts} undefined and the script returns null. A browser that never answers, or
+     * answers something that is not a set of observations, leaves the caret exactly where it is. The
+     * UI and the era are both checked again when the answer lands, because a reader can leave the
+     * page or act on it inside that round trip. The one outcome this cannot produce is the one it
+     * exists to prevent.
+     *
+     * <p>Must run on the Vaadin UI thread; the answer is handled on it too, and it focuses a
+     * component.
+     */
+    private void offerTheCaretBack() {
+        if (getUI().isEmpty()) {
+            return;
+        }
+        int askedIn = caretEra;
+        composer.getElement().executeJs(CARET_FACTS, composer.getElement())
+                .then(JsonNode.class, report -> {
+                    if (getUI().isEmpty() || caretEra != askedIn) {
+                        return;
+                    }
+                    if (CaretPlace.reportedBy(report).invitesTheCaretBack()) {
+                        prompt.focus();
+                    }
+                });
+    }
+
+    /**
+     * Records that the reader has just settled where the caret belongs.
+     *
+     * <p>Called from every act this view performs on the reader's behalf that decides that question
+     * - opening a conversation, entering a new one, asking, stopping a generation - and the
+     * invariant is that list rather than any particular one of them: {@link #caretEra} has to move
+     * whenever the answer to a question already in flight would have changed. No call site is asked
+     * to work out whether a question happens to be outstanding at that instant, because a call site
+     * that got that wrong would be wrong invisibly, on a race.
+     *
+     * <p>Deliberately not called from {@link #finishTurn}. A turn ending is not the reader settling
+     * anything - it is the event this whole path exists to stop acting on - and moving the era there
+     * would cancel the view's own question before its answer arrived.
+     *
+     * <p>Must run on the Vaadin UI thread, which is where {@link #caretEra} is read.
+     */
+    private void readerSettledTheCaret() {
+        caretEra++;
+    }
+
+    /**
+     * The reader asked for the generation to stop: stop it, and give them the caret back.
+     *
+     * <p>Reached from the two ways of asking and from nowhere else - the Stop control the send
+     * button becomes for the length of a turn, and Escape. Both are the reader acting, which is
+     * what earns the unconditional focus call here that {@link #finishTurn} is not allowed to make:
+     * the control they just pressed is about to stop being the thing they pressed, because it turns
+     * back into Send and with an empty field it is disabled outright. Leaving them standing on it
+     * would strand a keyboard reader on a dead button.
+     *
+     * <p>{@link Agent} exposes no cancellation, so what is cancelled is this view's half of the
      * exchange: the flag closes the transcript to further tokens, the composer comes back under the
      * reader's control, and the worker is interrupted in case the provider honours it. The response
-     * may still complete server-side; it simply no longer has anywhere to go.
-     *
-     * <p>Everything above that sentence is {@link #closeActiveTurn}, which {@link #onDetach} runs
-     * too. What is only here is what is said to somebody who is still looking: the announcement and
-     * the caret going back to the composer are meaningless to a page that has already gone.
+     * may still complete server-side; it simply no longer has anywhere to go. All of that is
+     * {@link #endStreamingTurn}, which the path that abandons a turn shares; the caret is the one
+     * thing that is only here, because it is the one thing only a request justifies.
      *
      * <p>Must run on the Vaadin UI thread.
      */
     private void stopStreaming() {
-        if (!closeActiveTurn()) {
+        if (!endStreamingTurn()) {
             return;
         }
-        announce(ANSWER_STOPPED);
+        readerSettledTheCaret();
         prompt.focus();
+    }
+
+    /**
+     * Ends the turn that is streaming and says so, without an opinion about where the caret goes.
+     *
+     * <p>Split out of {@link #stopStreaming} because two callers reach it for opposite reasons and
+     * only one of them is the reader asking for the composer. Pressing Stop is a request, and the
+     * caret belongs back in the composer afterwards. Opening another conversation is not: the
+     * reader clicked a row and is still working in that column, so taking the caret across the page
+     * would be the same violation this view spent {@link #offerTheCaretBack} closing - and worse
+     * for being intermittent, since it only happened when a turn was streaming at that instant. The
+     * same act behaved two ways depending on the model's timing, which is the kind of thing a
+     * keyboard reader cannot form a habit around.
+     *
+     * <p>The announcement stays on both paths. A turn cut short is a thing that happened to the
+     * transcript whichever way it was cut short, and a log region that goes quiet about it leaves
+     * anything listening to infer the answer simply stopped mid-sentence.
+     *
+     * <p>Must run on the Vaadin UI thread; it writes to components through {@link #closeActiveTurn}.
+     *
+     * @return true when this call is the one that ended a turn, false when there was none running
+     *         or another caller had already closed it - in which case nothing was announced either
+     */
+    private boolean endStreamingTurn() {
+        if (!closeActiveTurn()) {
+            return false;
+        }
+        announce(ANSWER_STOPPED);
+        return true;
     }
 
     /**
@@ -1636,6 +2039,20 @@ public class ChatView extends Div implements ConversationHost {
         setStreaming(false);
     }
 
+    /**
+     * Adds a turn to the bottom of the transcript and takes the reader there.
+     *
+     * <p>The only place a turn is added, which is what makes the scroll unconditional here: every
+     * caller is either the reader sending a question or the application answering one, and both are
+     * moments the reader expects to be at the foot of the conversation. Automatic movement during a
+     * turn is the scroll pin's business, not this method's.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param role who spoke
+     * @param text the message, or an empty string for an assistant turn about to be streamed into
+     * @return the new turn, already attached, so the caller can keep writing into it
+     */
     private MessageTurn appendMessage(ConversationMessage.Role role, String text) {
         MessageTurn turn = new MessageTurn(role, text, turnActions);
         transcriptInner.add(turn);
@@ -1784,6 +2201,18 @@ public class ChatView extends Div implements ConversationHost {
         announcer.setText(message);
     }
 
+    /**
+     * One key name, marked up as a key rather than styled to look like one.
+     *
+     * <p>A {@code <kbd>} element says "this is a key you press", which a span with a border only
+     * looks like. The distinction is what a screen reader has to go on, and the hint under the
+     * composer is precisely the place a reader who cannot see the border needs told.
+     *
+     * <p>The text goes through {@link Element#setText}, which escapes.
+     *
+     * @param key the key's printed name, such as "Enter"
+     * @return the element, detached
+     */
     private static Element keyCap(String key) {
         Element cap = new Element("kbd");
         cap.setText(key);
@@ -1799,6 +2228,14 @@ public class ChatView extends Div implements ConversationHost {
      * holding two copies of a question.
      */
     private final class TurnControls implements MessageTurn.Actions {
+
+        /**
+         * Built once, as the view's own field. Written out rather than left implicit so it can say
+         * that this is an inner class on purpose: it reaches the enclosing view's state directly,
+         * which is what lets both actions funnel into the one rewind.
+         */
+        private TurnControls() {
+        }
 
         @Override
         public void regenerate(MessageTurn answer) {

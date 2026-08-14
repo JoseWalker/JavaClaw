@@ -26,6 +26,17 @@ public record ConversationMessage(Role role, String text) {
         ASSISTANT
     }
 
+    /**
+     * Rejects a half-built turn at construction instead of letting it reach the transcript.
+     *
+     * <p>Both components are dereferenced while painting - the role picks the bubble style, the text
+     * is fed to the markdown parser - so a null here would surface as a render failure in the middle
+     * of a conversation, with nothing left to say which record was malformed or where it came from.
+     * Failing at the boundary keeps the stack trace pointing at the adapter that built it.
+     *
+     * @throws NullPointerException if either the role or the text is null; an empty text is legal,
+     *     because an assistant turn is created empty and filled token by token as the answer streams
+     */
     public ConversationMessage {
         Objects.requireNonNull(role, "role");
         Objects.requireNonNull(text, "text");

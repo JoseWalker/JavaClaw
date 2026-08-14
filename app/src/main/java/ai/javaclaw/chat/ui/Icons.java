@@ -15,6 +15,12 @@ import com.vaadin.flow.component.html.Span;
  */
 final class Icons {
 
+    /**
+     * The opening tag every glyph in this file shares, so that the shared attributes are written
+     * once and cannot drift apart. {@code stroke="currentColor"} is what makes a glyph follow the
+     * theme and the disabled state of the control it sits in; {@code focusable="false"} keeps the
+     * SVG out of the tab order, which older engines otherwise put it in.
+     */
     private static final String OPEN = "<svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\""
             + " fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\""
             + " stroke-linecap=\"round\" stroke-linejoin=\"round\" focusable=\"false\">";
@@ -134,6 +140,10 @@ final class Icons {
         return span;
     }
 
+    /**
+     * Not instantiable. This is a set of constants and one factory; an instance would hold nothing,
+     * and the private constructor is what keeps that from being tried.
+     */
     private Icons() {
     }
 }

@@ -71,6 +71,10 @@ final class ComposerDrafts {
      */
     private static final int MAX_CHARACTERS = 128 * 1024;
 
+    /**
+     * Not instantiable. Every draft belongs to a {@link com.vaadin.flow.server.VaadinSession}, which
+     * is where the state actually lives, so an instance of this class would carry nothing.
+     */
     private ComposerDrafts() {
     }
 
@@ -168,6 +172,14 @@ final class ComposerDrafts {
      * cannot be written takes the whole session down with it.
      */
     private static final class Drafts implements Serializable {
+
+        /**
+         * Created empty on first use and never by anyone outside this file, so the implicit
+         * constructor is written out only to carry that fact and the class invariant with it:
+         * every mutation happens on the Vaadin UI thread, which is why the map needs no locking.
+         */
+        private Drafts() {
+        }
 
         /** Conversation id to unsent text, least recently written first, which is eviction order. */
         private final Map<String, String> byConversation = new LinkedHashMap<>();

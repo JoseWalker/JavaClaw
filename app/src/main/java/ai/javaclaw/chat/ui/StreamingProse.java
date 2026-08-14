@@ -52,6 +52,24 @@ import java.util.List;
  */
 final class StreamingProse {
 
+    /**
+     * Instantiated once per assistant turn, from {@link MessageTurn}. Written out rather than left
+     * implicit so it can carry the invariant the class depends on: an instance starts empty and is
+     * only ever fed forward, so {@link #settled} can be a plain index into {@link #buffer} instead
+     * of a position that would have to be re-found after an edit.
+     *
+     * <p>Must be constructed and used entirely on the Vaadin UI thread.
+     */
+    StreamingProse() {
+    }
+
+    /**
+     * Everything the model has emitted for this turn, in the order it arrived and unmodified.
+     *
+     * <p>The whole answer is kept rather than only the unsettled remainder because the tail is
+     * re-derived on every token: block structure can only be judged against the text that precedes
+     * it, so a buffer that dropped the settled part could not tell a fence from a paragraph.
+     */
     private final StringBuilder buffer = new StringBuilder();
 
     /** How much of {@link #buffer} has already been rendered and handed to the transcript. */
@@ -91,7 +109,12 @@ final class StreamingProse {
         return typeset(tailText());
     }
 
-    /** The block still being written, exactly as the model wrote it. */
+    /**
+     * The block still being written, exactly as the model wrote it.
+     *
+     * @return everything after the settled boundary, never null; empty when the whole of the answer
+     *     so far has already been handed to the transcript
+     */
     String tailText() {
         return buffer.substring(settled);
     }
@@ -99,7 +122,7 @@ final class StreamingProse {
     /**
      * Typesets the pending text, healing the two blocks whose syntax is unreadable half-written.
      *
-     * <h2>Why the inline grammar alone was not enough</h2>
+     * <h4>Why the inline grammar alone was not enough</h4>
      *
      * <p>The tail used to be handed to the inline parser whole, with one exception for the inside
      * of a fence, where a backtick pair is an identifier a reader is being shown. That left the
@@ -122,6 +145,8 @@ final class StreamingProse {
      * decidably a table.
      *
      * @param text the pending run, possibly empty
+     *
+     * @return the blocks to draw for the tail, in order; empty when there is nothing pending
      */
     private static List<Element> typeset(String text) {
         if (text.isEmpty()) {
@@ -166,7 +191,12 @@ final class StreamingProse {
         return out;
     }
 
-    /** Typesets whatever prose has accumulated and empties the buffer. */
+    /**
+     * Typesets whatever prose has accumulated and empties the buffer.
+     *
+     * @param prose the accumulated inline run, emptied by this call
+     * @param out where the resulting blocks are appended
+     */
     private static void flushProse(StringBuilder prose, List<Element> out) {
         if (prose.isEmpty()) {
             return;
@@ -208,6 +238,10 @@ final class StreamingProse {
      * complete: it is the one piece of markdown that is never meant to be seen, and holding it back
      * for the moment it takes to finish costs the reader nothing. A dash is required as well as a
      * pipe, so an empty row of cells is not swallowed by this.
+     *
+     * @param line the last line of the tail
+     * @return true when the line is table punctuation and nothing else, and should be held back
+     *     until it is complete
      */
     private static boolean isTableSyntax(String line) {
         String candidate = line.strip();
@@ -271,6 +305,12 @@ final class StreamingProse {
     }
 
     /**
+     * Whether this line is a code fence, and which of the two markers it uses.
+     *
+     * <p>The marker is returned rather than a boolean because a fence is only closed by its own
+     * kind: a block opened with backticks runs on through a line of tildes, and treating either
+     * marker as a match would end a block in the middle of an answer that contains the other.
+     *
      * @param line one complete line of the answer
      * @return the fence marker that opens or closes a code block here, or null when this line is
      *         ordinary text

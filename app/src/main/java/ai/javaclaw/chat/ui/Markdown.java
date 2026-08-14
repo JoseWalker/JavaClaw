@@ -46,7 +46,16 @@ final class Markdown {
      */
     private static final int MAX_DEPTH = 6;
 
+    /**
+     * An ATX heading. Up to three leading spaces, because four is indented content; a required space
+     * after the hashes, which is what keeps {@code #1} and a hashtag out of the heading rule.
+     */
     private static final Pattern HEADING = Pattern.compile("^ {0,3}(#{1,6})\\s+(.*?)\\s*#*\\s*$");
+
+    /**
+     * A code fence, either spelling, with whatever info string follows it. The marker is captured
+     * because a block is closed only by its own kind - see {@link #codeBlock}.
+     */
     private static final Pattern FENCE = Pattern.compile("^ {0,3}(```|~~~)\\s*(\\S*).*$");
 
     /**
@@ -55,10 +64,36 @@ final class Markdown {
      * matched against a shape rather than escaped: anything else is not a language and is dropped.
      */
     private static final Pattern LANGUAGE = Pattern.compile("[a-z0-9][a-z0-9+#._-]{0,19}");
+    /**
+     * A horizontal rule. The back-reference is what requires all three marks to be the same
+     * character, so {@code -*-} is a line of text and {@code - - -} is a rule - and it is why this
+     * is tested before the list rule, which {@code - - -} would otherwise match.
+     */
     private static final Pattern THEMATIC_BREAK = Pattern.compile("^ {0,3}([-*_])(?:\\s*\\1){2,}\\s*$");
+
+    /**
+     * A bullet item. The leading whitespace is captured rather than skipped because it is the
+     * item's nesting level, which {@link #indentOf} then measures.
+     */
     private static final Pattern BULLET = Pattern.compile("^(\\s*)([-*+])\\s+(.*)$");
+
+    /**
+     * A numbered item, in either of the two spellings. The digit run is bounded so a line opening
+     * with a long number is prose rather than an item numbered past anything anyone wrote.
+     */
     private static final Pattern ORDERED = Pattern.compile("^(\\s*)(\\d{1,9})[.)]\\s+(.*)$");
+
+    /**
+     * A quoted line. The space after the marker is optional and is eaten when present, so
+     * {@code >text} and {@code > text} quote the same thing rather than differing by one space.
+     */
     private static final Pattern QUOTE = Pattern.compile("^ {0,3}>\\s?(.*)$");
+
+    /**
+     * An inline link. The target excludes whitespace and the closing bracket, which is what keeps a
+     * malformed link from running to the end of the paragraph; the optional trailing group is the
+     * title, matched so it can be discarded rather than left in the href.
+     */
     private static final Pattern LINK = Pattern.compile("\\[([^\\]]*)]\\(\\s*([^)\\s]*)(?:\\s+\"[^\"]*\")?\\s*\\)");
 
     /** The cell shape of a table's second row - the one that makes the first row a header. */
@@ -143,7 +178,7 @@ final class Markdown {
      * Projects markdown to the prose inside it, for the places that describe an answer rather than
      * showing it.
      *
-     * <h2>Why this exists</h2>
+     * <h4>Why this exists</h4>
      *
      * <p>The conversation column describes each row with the opening of its first message, and the
      * tooltip does the same at more length. Both were handed the source, so a screen reader read
@@ -279,6 +314,25 @@ final class Markdown {
 
     // ------------------------------------------------------------------ blocks
 
+    /**
+     * The block loop: reads lines until they run out, deciding what each one opens.
+     *
+     * <p>The order of the tests is the grammar. A fence is tried first because everything inside one
+     * is text and no other rule may look at it; a thematic break before a list, because
+     * {@code - - -} matches both and is a rule; a table before a paragraph, because its first line
+     * is ordinary prose until the delimiter row under it says otherwise.
+     *
+     * <p>The final branch is what makes this parser safe on model output: anything no rule claimed
+     * becomes a paragraph. There is no error path, so a construct this file has never heard of is
+     * shown as the text it was rather than swallowed.
+     *
+     * <p>Each helper returns the index to continue from, so a block that turns out not to be one -
+     * a run of dollars that is not a formula - can decline by returning where it started.
+     *
+     * @param lines the source, already split and normalised
+     * @param depth current nesting, so a list inside a quote inside a list cannot recurse forever
+     * @return the block elements in order; empty when the input held nothing but blank lines
+     */
     private static List<Element> blocks(List<String> lines, int depth) {
         List<Element> out = new ArrayList<>();
         int i = 0;
@@ -311,6 +365,23 @@ final class Markdown {
         return out;
     }
 
+    /**
+     * Draws an ATX heading, clamped to the three levels the stylesheet scales.
+     *
+     * <p>Clamping rather than emitting {@code h4} through {@code h6} is deliberate: an unstyled
+     * heading inherits body size and stops looking like a heading at all, so a level-five heading
+     * that reads as a paragraph has lost its rank more completely than one that shares the smallest.
+     * The document outline still gets a real heading element either way.
+     *
+     * <p>Re-matches the line rather than taking the caller's matcher, so the method is correct on
+     * its own; the caller's test is a lookahead, not a parse.
+     *
+     * @param lines the source
+     * @param start index of the heading line
+     * @param out where the heading is appended
+     * @param depth current nesting, passed on to the inline parser
+     * @return the index to continue from, always one past the heading
+     */
     private static int heading(List<String> lines, int start, List<Element> out, int depth) {
         Matcher matcher = HEADING.matcher(lines.get(start));
         if (!matcher.matches()) {
@@ -327,6 +398,15 @@ final class Markdown {
     /**
      * Reads a fenced block, tolerating one that never closes - which is exactly what a stopped
      * answer leaves behind.
+     *
+     * <p>The closing marker has to be the same kind that opened the block, which is why the fence
+     * character is captured rather than tested for generically: a block opened with backticks runs
+     * on through a line of tildes, and a lenient close would end a snippet in the middle of itself.
+     *
+     * @param lines the source
+     * @param start index of the opening fence
+     * @param out where the figure is appended
+     * @return the index past the closing fence, or the end of the input for an unclosed block
      */
     private static int codeBlock(List<String> lines, int start, List<Element> out) {
         String fence = lines.get(start).strip().startsWith("~~~") ? "~~~" : "```";
@@ -355,6 +435,7 @@ final class Markdown {
      *
      * @param code     the block's text, exactly as it was written
      * @param language the language named on the fence, already allow-listed by shape, or null
+     * @return the complete figure, detached
      */
     private static Element codeFigure(String code, String language) {
         Element block = new Element("code");
@@ -375,6 +456,18 @@ final class Markdown {
         return figure;
     }
 
+    /**
+     * The bar above a code block: what language it is, and the control that copies it.
+     *
+     * <p>A {@code figcaption} rather than a div, so the bar is the figure's caption in the document
+     * outline and a screen reader announces the language as the block's name rather than as a stray
+     * word above it.
+     *
+     * @param language the allow-listed language name, or null when the fence carried none - in
+     *     which case the bar still says "code", so its height and the copy control's position are
+     *     the same on every block
+     * @return the caption element, detached
+     */
     private static Element codeHead(String language) {
         Element name = new Element("span");
         name.setAttribute("class", "jc-code__lang");
@@ -394,6 +487,9 @@ final class Markdown {
      * <p>Both states are drawn into the button and the stylesheet shows one of them, which is how
      * the confirmation costs nothing at the moment it is needed: the tick is already on the page
      * before the reader presses anything.
+     *
+     * @return the button, detached, carrying no listener - the transcript's single delegated
+     *     listener acts on the {@code data-jc-copy} attribute instead
      */
     private static Element copyControl() {
         Element button = new Element("button");
@@ -411,12 +507,37 @@ final class Markdown {
         return button;
     }
 
+    /**
+     * An icon for the code block's chrome, as a bare element rather than a component.
+     *
+     * <p>This file builds a DOM tree, not a component tree: the blocks it returns are appended
+     * straight into a turn's bubble, so wrapping a glyph in a Vaadin component would attach a
+     * client-side component to every icon in every code block of every answer.
+     *
+     * <p>The class is set rather than added, which overwrites what {@link Icons#glyph} wrote - the
+     * base class is repeated here on purpose so the whole class list is visible in one place.
+     *
+     * @param svg one of the {@link Icons} constants
+     * @param className the extra classes this icon needs, never null
+     * @return the glyph element, detached
+     */
     private static Element glyph(String svg, String className) {
         Element glyph = Icons.glyph(svg).getElement();
         glyph.setAttribute("class", "jc-glyph " + className);
         return glyph;
     }
 
+    /**
+     * A short labelled span for the code block's chrome.
+     *
+     * <p>The text goes through {@link Element#setText}, which escapes - so even though every caller
+     * passes a source literal today, a later caller that passes model output cannot turn this into
+     * a markup injection.
+     *
+     * @param text the label
+     * @param className the classes it carries
+     * @return the span, detached
+     */
     private static Element caption(String text, String className) {
         Element caption = new Element("span");
         caption.setAttribute("class", className);
@@ -452,6 +573,9 @@ final class Markdown {
      * holding a command {@link Latex} will not draw, leaves the lines untouched for the paragraph
      * they otherwise are - which is what keeps the source readable instead of swallowed.
      *
+     * @param lines the source
+     * @param start index of the candidate opening line
+     * @param out where the formula is appended, and left untouched on a decline
      * @return the line to continue from, or {@code start} when this is not display maths
      */
     private static int displayMath(List<String> lines, int start, List<Element> out) {
@@ -468,6 +592,26 @@ final class Markdown {
         return start;
     }
 
+    /**
+     * Tries one delimiter pair against a run of lines, and declines cleanly if it does not fit.
+     *
+     * <p>Split from its overload so each pair is attempted independently: a run that opens with
+     * {@code $$} but never closes must not stop {@code \[} from being tried, and neither may leave
+     * anything in {@code out} - which is why the element is only appended once {@link Latex} has
+     * agreed it can draw the whole formula.
+     *
+     * <p>A blank line ends the search. An unterminated formula is far more likely to be prose that
+     * happened to start with two dollars than a formula spanning a paragraph break, and scanning to
+     * the end of the answer for a close would swallow everything after it.
+     *
+     * @param lines the source
+     * @param start index of the opening line
+     * @param out where the formula is appended, and left untouched on a decline
+     * @param open the opening delimiter
+     * @param close the closing delimiter
+     * @return the index to continue from, or {@code start} when this pair does not fit or the
+     *     formula is one this renderer will not draw
+     */
     private static int displayMath(List<String> lines, int start, List<Element> out,
                                    String open, String close) {
         StringBuilder formula = new StringBuilder();
@@ -501,6 +645,20 @@ final class Markdown {
         return math.isPresent() ? end : start;
     }
 
+    /**
+     * Reads a block quote and parses its contents as blocks in their own right.
+     *
+     * <p>Recursive, because a quote really can hold a list or a code block and flattening it to text
+     * would lose that. The recursion is what {@link #MAX_DEPTH} guards: at the ceiling the quoted
+     * lines are set as plain text instead, so a pathologically nested answer degrades to something
+     * readable rather than overflowing the stack.
+     *
+     * @param lines the source
+     * @param start index of the first quoted line
+     * @param out where the blockquote is appended
+     * @param depth current nesting
+     * @return the index of the first line that is not part of this quote
+     */
     private static int quote(List<String> lines, int start, List<Element> out, int depth) {
         List<String> quoted = new ArrayList<>();
         int i = start;
@@ -554,6 +712,22 @@ final class Markdown {
         return i;
     }
 
+    /**
+     * Whether a table starts here, which can only be told from the line below.
+     *
+     * <p>A table's first line is an ordinary sentence with pipes in it; what makes it a header is
+     * the delimiter row underneath. That is why this takes the whole list and an index rather than
+     * a line, and why the paragraph reader has to ask it separately - without that, a lead-in
+     * sentence swallows the table under it, which is the shape an answer almost always arrives in.
+     *
+     * <p>The column count is bounded so a line of unrelated pipes cannot become a hundred-column
+     * table, and the two rows must agree on it: a header and a delimiter row of different widths is
+     * not a table anyone wrote on purpose.
+     *
+     * @param lines the source
+     * @param at index of the candidate header row
+     * @return true only when this line and the next form a table header
+     */
     private static boolean opensTable(List<String> lines, int at) {
         if (at + 1 >= lines.size()) {
             return false;
@@ -581,6 +755,12 @@ final class Markdown {
      * with no overflow reported anywhere. The scroll is the wrapper's rather than the table's on
      * purpose: a table made into its own scroll container stops sizing its header and its body to
      * the same columns, which trades a readable table for a scrollable misaligned one.
+     *
+     * @param lines the source
+     * @param start index of the header row
+     * @param out where the wrapped table is appended
+     * @param depth current nesting, passed on to the cell parser
+     * @return the index of the first line that is not a row
      */
     private static int table(List<String> lines, int start, List<Element> out, int depth) {
         List<String> headers = tableCells(lines.get(start));
@@ -616,6 +796,12 @@ final class Markdown {
      * One row, held to the header's column count so every row lines up under the same headings: a
      * ragged row is padded with empty cells and a long one is cut, rather than shifting the columns
      * of that row against every other.
+     *
+     * @param cellTag {@code th} for the header row, {@code td} for the rest
+     * @param cells the row as written, which may be shorter or longer than the header
+     * @param columns the header's column count, which this row is padded or cut to
+     * @param depth current nesting, passed on to the inline parser
+     * @return the row element, detached, always holding exactly {@code columns} cells
      */
     private static Element tableRow(String cellTag, List<String> cells, int columns, int depth) {
         Element row = new Element("tr");
@@ -639,6 +825,7 @@ final class Markdown {
      * <p>The pipes on the outside of a row are optional in the syntax and are not columns; they are
      * dropped here so {@code | a | b |} and {@code a | b} describe the same two-column row.
      *
+     * @param line one line of the source
      * @return the cells in order, or an empty list when this line is not a row at all
      */
     private static List<String> tableCells(String line) {
@@ -687,6 +874,12 @@ final class Markdown {
      * <p>Anything indented past the marker belongs to the item that opened it and is handed back to
      * {@link #blocks} with that indent removed, so a nested list is parsed by the same code as a top
      * level one rather than by a second, subtly different implementation.
+     *
+     * @param lines the source
+     * @param start index of the first item's marker
+     * @param out where the list is appended
+     * @param depth current nesting
+     * @return the index of the first line that is not part of this list
      */
     private static int list(List<String> lines, int start, List<Element> out, int depth) {
         int indent = indentOf(lines.get(start));
@@ -739,6 +932,8 @@ final class Markdown {
      * unnamed control, and with it the state has a subject.
      *
      * @param done whether the answer marked this item as done
+     *
+     * @return the box, detached and always disabled
      */
     private static Element taskBox(boolean done) {
         Element box = new Element("input");
@@ -752,7 +947,15 @@ final class Markdown {
         return box;
     }
 
-    /** Everything that hangs under an item: its wrapped text, its nested lists, its paragraphs. */
+    /**
+     * Everything that hangs under an item: its wrapped text, its nested lists, its paragraphs.
+     *
+     * @param lines the source
+     * @param from index of the line after the item's marker
+     * @param indent the marker's own indent; anything indented past it belongs to this item
+     * @param item filled with the item's lines, dedented, in order
+     * @return the index of the first line that is not part of the item
+     */
     private static int collectItemBody(List<String> lines, int from, int indent, List<String> item) {
         int i = from;
         while (i < lines.size()) {
@@ -775,6 +978,19 @@ final class Markdown {
         return i;
     }
 
+    /**
+     * Fills one list item, choosing between inline text and a nested block parse.
+     *
+     * <p>The single-line case is not an optimisation. Parsing "buy milk" as blocks produces a
+     * paragraph, and a {@code <p>} inside an {@code <li>} carries a block margin inside a row the
+     * list is already spacing - so an ordinary list would gain a blank line between every entry.
+     * The same reasoning is why a multi-line item that turns out to be one paragraph is unwrapped
+     * after the fact rather than left as it came back.
+     *
+     * @param entry the {@code <li>} being filled
+     * @param item the item's lines, already dedented, the first of which carries the marker's text
+     * @param depth current nesting; at the ceiling the item is read inline rather than recursed into
+     */
     private static void appendItemContent(Element entry, List<String> item, int depth) {
         boolean singleLine = item.stream().skip(1).allMatch(String::isBlank);
         if (singleLine || depth >= MAX_DEPTH) {
@@ -793,6 +1009,21 @@ final class Markdown {
         parts.forEach(entry::appendChild);
     }
 
+    /**
+     * Reads a run of ordinary lines as one paragraph. The fallback every unclaimed line ends in.
+     *
+     * <p>Runs to the first blank line or to the first line that opens some other block, and the
+     * {@code i > start} guard on that second test is what stops the method refusing to consume the
+     * line it was called for - without it a line that both fails the block loop's tests and passes
+     * one here would leave the index unmoved and the outer loop spinning.
+     *
+     * @param lines the source
+     * @param start index of the paragraph's first line
+     * @param out where the paragraph is appended
+     * @param depth current nesting, passed on to the inline parser
+     * @return the index of the first line that is not part of this paragraph, always past
+     *     {@code start}
+     */
     private static int paragraph(List<String> lines, int start, List<Element> out, int depth) {
         List<String> text = new ArrayList<>();
         int i = start;
@@ -828,6 +1059,10 @@ final class Markdown {
      * the paragraph has ended, and the answer must not depend on whether the formula further down
      * turns out to be one this UI can draw. A run of dollars that {@link Latex} later refuses ends
      * the paragraph and becomes a paragraph of its own, which is the source, unaltered.
+     *
+     * @param line one line of the source
+     * @return true when the line opens a display-maths delimiter, whether or not the formula under
+     *     it turns out to be one this renderer can draw
      */
     private static boolean opensDisplayMath(String line) {
         String start = line.strip();
@@ -839,6 +1074,17 @@ final class Markdown {
         return false;
     }
 
+    /**
+     * Whether this line, on its own, starts a block other than a paragraph.
+     *
+     * <p>Deliberately does not include tables or display maths, and that is not an omission: neither
+     * can be recognised from a single line, so both are asked about separately by the one caller
+     * that has the surrounding lines to hand. Folding them in here would need a signature this test
+     * does not have.
+     *
+     * @param line one line of the source
+     * @return true when the line opens a fence, a rule, a heading, a quote or a list item
+     */
     private static boolean opensBlock(String line) {
         return FENCE.matcher(line).matches()
                 || THEMATIC_BREAK.matcher(line).matches()
@@ -847,6 +1093,19 @@ final class Markdown {
                 || itemMarker(line) != null;
     }
 
+    /**
+     * Whether this line is a list item, and the matcher that says how.
+     *
+     * <p>The matcher is returned rather than a boolean because the caller needs its groups - the
+     * indent, the marker and the text - and matching twice is both wasteful and an invitation for
+     * the two matches to be written against different patterns.
+     *
+     * <p>Bullets are tried before ordered items only because the two patterns are disjoint; either
+     * order would do, and no line can be both.
+     *
+     * @param line one line of the source
+     * @return a matcher already positioned on the match, or null when the line is not an item
+     */
     private static Matcher itemMarker(String line) {
         Matcher bullet = BULLET.matcher(line);
         if (bullet.matches()) {
@@ -856,6 +1115,16 @@ final class Markdown {
         return ordered.matches() ? ordered : null;
     }
 
+    /**
+     * How many leading spaces a line carries, which is what decides list nesting.
+     *
+     * <p>Spaces only. A tab is not counted as an indent because its width is a rendering decision
+     * and treating it as one column would nest a tab-indented item under a two-space one, while
+     * treating it as four would do the opposite - and models emit spaces.
+     *
+     * @param line one line of the source
+     * @return the count of leading spaces, zero for an unindented or empty line
+     */
     private static int indentOf(String line) {
         int i = 0;
         while (i < line.length() && line.charAt(i) == ' ') {
@@ -864,6 +1133,18 @@ final class Markdown {
         return i;
     }
 
+    /**
+     * Removes up to a given number of leading spaces, and no more.
+     *
+     * <p>Bounded by what is actually there rather than by {@code substring(columns)}, which would
+     * throw on a short line and, worse, would cut into the text of a line that is indented less than
+     * its neighbours. A nested item's continuation lines are not always aligned to the same column,
+     * and losing a character off the front of one is a silent corruption of the answer.
+     *
+     * @param line one line of the source
+     * @param columns the most spaces to remove
+     * @return the line with its indent reduced; the same line when it has no leading space
+     */
     private static String dedent(String line, int columns) {
         int cut = 0;
         while (cut < columns && cut < line.length() && line.charAt(cut) == ' ') {
@@ -880,6 +1161,10 @@ final class Markdown {
      * <p>Scanned left to right and closed by the first matching delimiter, which is what keeps a
      * lone asterisk in a sentence from swallowing the rest of the paragraph: an opener with no
      * closer is emitted as the character it is.
+     *
+     * @param text one line of inline markdown
+     * @param parent the element the result is appended to
+     * @param depth current nesting
      */
     private static void inline(String text, Element parent, int depth) {
         inline(text, parent, depth, false);
@@ -895,6 +1180,10 @@ final class Markdown {
      * emphasis inside a link is an {@code em}.
      *
      * @param inLink true when everything appended here is already inside an {@code a}
+     *
+     * @param text one line of inline markdown
+     * @param parent the element the result is appended to
+     * @param depth current nesting
      */
     private static void inline(String text, Element parent, int depth, boolean inLink) {
         if (depth >= MAX_DEPTH) {
@@ -977,6 +1266,12 @@ final class Markdown {
      * so, and printed as its own tildes it reads as the affirmative claim with punctuation around
      * it - the one inline construct whose absence inverts a sentence.
      *
+     * @param text the line being scanned
+     * @param at position of the opening delimiter
+     * @param parent the element the run is appended to
+     * @param plain the scanner's pending plain text, flushed once the run is certain
+     * @param depth current nesting
+     * @param inLink whether this run is already inside a link, which its contents inherit
      * @return characters consumed, or 0 when this is not a struck run
      */
     private static int strikethrough(String text, int at, Element parent, StringBuilder plain,
@@ -1005,6 +1300,10 @@ final class Markdown {
      * <p>The character before it has to be a boundary. Without that, the tail of an identifier or
      * of a URL already being read - {@code xhttps://}, or the second half of one this scan has
      * passed over - would open a link in the middle of a word.
+     *
+     * @param text the line being scanned
+     * @param at the position to test
+     * @return true when a bare URL starts exactly here
      */
     private static boolean opensAutolink(String text, int at) {
         if (at > 0 && Character.isLetterOrDigit(text.charAt(at - 1))) {
@@ -1014,6 +1313,13 @@ final class Markdown {
     }
 
     /**
+     * Which allow-listed scheme, if any, a bare URL at this position starts with.
+     *
+     * <p>An allow-list rather than a scan for "://" - the whole point is that {@code javascript:}
+     * and {@code data:} never become an href, and a structural test would accept both.
+     *
+     * @param text the line being scanned
+     * @param at the position to test
      * @return the allow-listed scheme this position opens, matched without regard to case as the
      *         syntax requires, or null when it opens none
      */
@@ -1042,6 +1348,10 @@ final class Markdown {
      * <p>The target goes through the same {@link #safeHref} allow-list as an explicit link, so a
      * scheme this UI will not navigate to is left as the text it was rather than made clickable.
      *
+     * @param text the line being scanned
+     * @param at position the URL starts at
+     * @param parent the element the link is appended to
+     * @param plain the scanner's pending plain text, flushed once the link is certain
      * @return characters consumed, or 0 when what starts here is not a URL worth linking
      */
     private static int autolink(String text, int at, Element parent, StringBuilder plain) {
@@ -1079,6 +1389,7 @@ final class Markdown {
      *
      * @param from where the URL starts
      * @param to   where the run of non-space characters ends
+     * @param text the line being scanned
      * @return the end of the URL itself, never before {@code from}
      */
     private static int trimSentencePunctuation(String text, int from, int to) {
@@ -1094,7 +1405,15 @@ final class Markdown {
         return end;
     }
 
-    /** Whether the bracket closing this run was opened inside it, rather than around it. */
+    /**
+     * Whether the bracket closing this run was opened inside it, rather than around it.
+     *
+     * @param text the line being scanned
+     * @param from the first character inside the run
+     * @param end index of the candidate closing bracket
+     * @return true when the bracket belongs to something nested inside the run, in which case it
+     *     does not close it
+     */
     private static boolean opensItsOwnBracket(String text, int from, int end) {
         int open = 0;
         int close = 0;
@@ -1114,6 +1433,10 @@ final class Markdown {
      * <p>An underscore between word characters is not a delimiter - it is a name. Without this,
      * every {@code snake_case_identifier} in an answer about code loses its underscores and turns
      * italic halfway through.
+     *
+     * @param text the line being scanned
+     * @param at position of the candidate delimiter
+     * @return true when emphasis may open here
      */
     private static boolean isEmphasisOpener(String text, int at) {
         char c = text.charAt(at);
@@ -1132,6 +1455,18 @@ final class Markdown {
     }
 
     /**
+     * Reads an emphasis or strong run, or declines and leaves the delimiter as a character.
+     *
+     * <p>Declining is the important half. A lone asterisk in a sentence is far commoner in model
+     * output than an unclosed emphasis run, so an opener with no closer emits nothing and the caller
+     * prints the character - which is what stops one stray asterisk italicising the rest of an
+     * answer.
+     *
+     * @param text the line being scanned
+     * @param at position of the opening delimiter
+     * @param parent the element the run is appended to
+     * @param plain the scanner's pending plain text, flushed before anything is appended
+     * @param depth current nesting, since emphasis may contain a link and a link emphasis
      * @param inLink whether this run is already inside a link, which its contents inherit
      * @return characters consumed, or 0 when the run has no closing delimiter
      */
@@ -1171,6 +1506,10 @@ final class Markdown {
      * digit, and what lies between actually looks like a formula. "It costs $5 and $10 more" fails
      * three of those, which is the point of having them.
      *
+     * @param text the line being scanned
+     * @param at position of the opening delimiter
+     * @param parent the element the formula is appended to
+     * @param plain the scanner's pending plain text, flushed only once a formula is certain
      * @return characters consumed, or 0 when this is not a formula this UI will draw
      */
     private static int math(String text, int at, Element parent, StringBuilder plain) {
@@ -1192,7 +1531,19 @@ final class Markdown {
         return text.charAt(at) == '$' ? dollarMath(text, at, parent, plain) : 0;
     }
 
-    /** @return characters consumed, or 0 when this dollar does not open a formula */
+    /**
+     * Reads a single-dollar formula, if that is what this dollar opens.
+     *
+     * <p>A dollar sign is currency far more often than it is a delimiter, so this declines on
+     * everything that does not look like maths - see {@link Latex#plausible} - and the caller then
+     * prints the dollar. "$5 and $10 more" has to survive as a sentence.
+     *
+     * @param text the line being scanned
+     * @param at position of the opening dollar
+     * @param parent the element the formula is appended to
+     * @param plain the scanner's pending plain text, flushed only once a formula is certain
+     * @return characters consumed, or 0 when this dollar does not open a formula
+     */
     private static int dollarMath(String text, int at, Element parent, StringBuilder plain) {
         int from = at + 1;
         if (from >= text.length()) {
@@ -1230,6 +1581,8 @@ final class Markdown {
      *
      * @param formula  the text between the delimiters
      * @param consumed what to report when it was drawn
+     * @param parent the element the formula is appended to
+     * @param plain the scanner's pending plain text, flushed only once the formula is drawn
      * @return {@code consumed}, or 0 when {@link Latex} refused the formula - in which case the
      *         delimiters and everything between them stay the characters the model sent
      */
@@ -1243,7 +1596,23 @@ final class Markdown {
         return consumed;
     }
 
-    /** @return characters consumed, or 0 when this bracket does not open a link */
+    /**
+     * Reads an inline link, or declines and leaves the bracket as a character.
+     *
+     * <p>The match is required to start exactly at {@code at} rather than merely to be found after
+     * it, because {@link Matcher#find(int)} would otherwise skip forward to a link later in the line
+     * and consume the text between as if it were part of one.
+     *
+     * <p>The target is allow-listed by scheme, so a {@code javascript:} or {@code data:} URL is
+     * drawn as its own label and never becomes an href.
+     *
+     * @param text the line being scanned
+     * @param at position of the opening bracket
+     * @param parent the element the link is appended to
+     * @param plain the scanner's pending plain text, flushed once the link is certain
+     * @param depth current nesting; the label is parsed inline one level deeper
+     * @return characters consumed, or 0 when this bracket does not open a link
+     */
     private static int link(String text, int at, Element parent, StringBuilder plain, int depth) {
         Matcher matcher = LINK.matcher(text);
         if (!matcher.find(at) || matcher.start() != at) {
@@ -1294,6 +1663,20 @@ final class Markdown {
         return null;
     }
 
+    /**
+     * Commits the run of plain characters the inline scanner has accumulated, and empties it.
+     *
+     * <p>The scanner appends character by character and flushes only when something else is about to
+     * be emitted, so a sentence becomes one text node instead of one per character. The buffer is
+     * cleared here rather than by the caller because every caller would have to, and the one that
+     * forgot would emit the same text twice.
+     *
+     * <p>Goes through {@link Element#createText}, which escapes - so nothing this parser accumulates
+     * can become markup.
+     *
+     * @param plain the scanner's buffer, emptied by this call
+     * @param parent the element the text node is appended to
+     */
     private static void flush(StringBuilder plain, Element parent) {
         if (plain.isEmpty()) {
             return;
@@ -1302,6 +1685,10 @@ final class Markdown {
         plain.setLength(0);
     }
 
+    /**
+     * Not instantiable. Parsing is a pure function of the text and the patterns are compiled once
+     * and shared; an instance would hold nothing and would only invite per-turn copies of them.
+     */
     private Markdown() {
     }
 }

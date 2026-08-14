@@ -66,7 +66,11 @@ final class MessageTurn extends Div {
      */
     interface Actions {
 
-        /** Answer this turn's question again, in place of the answer that is on screen. */
+        /**
+         * Answer this turn's question again, in place of the answer that is on screen.
+         *
+         * @param answer the turn to replace; the question behind it is what is asked again
+         */
         void regenerate(MessageTurn answer);
 
         /**
@@ -78,14 +82,45 @@ final class MessageTurn extends Div {
         void editAndResend(MessageTurn question, String text);
     }
 
+    /**
+     * The accessible name of the copy control, and its tooltip.
+     *
+     * <p>The five control labels are constants rather than literals at their call sites because each
+     * is used at least twice - once as the accessible name and once as the tooltip - and an
+     * icon-only button whose two names disagree tells a sighted reader and a screen-reader user two
+     * different things about the same control.
+     */
     private static final String COPY_LABEL = "Copy message";
+
+    /** Asks for the same question to be answered again. Only ever offered on a settled answer. */
     private static final String REGENERATE_LABEL = "Answer again";
+
+    /** Opens the editor on the reader's own turn. Says both halves: it edits, and it re-asks. */
     private static final String EDIT_LABEL = "Edit and ask again";
+
+    /** Commits the edit. Deliberately not "Save": nothing is saved, a new question is asked. */
     private static final String SEND_EDIT_LABEL = "Ask again";
+
+    /** Abandons the edit. Says what is lost, because the control is next to one that sends. */
     private static final String CANCEL_EDIT_LABEL = "Discard the edit";
 
+    /**
+     * What this turn's controls do. Transient because the implementation is the view that owns the
+     * conversation, and a turn is not the place a live view should be serialised from.
+     */
     private final transient Actions actions;
+
+    /** Who spoke. Decides the bubble's side, its styling, and which controls the turn offers. */
     private final ConversationMessage.Role role;
+
+    /**
+     * The turn's text exactly as it was typed or streamed, before any markdown in it was rendered.
+     *
+     * <p>Kept alongside the rendered markup rather than recovered from the DOM, because the two are
+     * not the same thing: rendering is lossy - a heading becomes an element and its hashes are gone -
+     * and this is what the store is given, what the editor opens on, and what a copy control puts on
+     * the clipboard.
+     */
     private final StringBuilder raw = new StringBuilder();
 
     /**
@@ -94,9 +129,28 @@ final class MessageTurn extends Div {
      */
     private final transient StreamingProse prose = new StreamingProse();
 
+    /**
+     * The text node the stream writes into while the answer is still arriving. Replaced by rendered
+     * blocks once a part of the answer settles, which is why it is held rather than looked up.
+     */
     private final Span content;
+
+    /**
+     * The speech bubble: the one element whose children change as a turn goes from streaming text to
+     * typeset prose, and the element the editor replaces while an edit is open.
+     */
     private final Div bubble;
+
+    /** Bubble, screen-reader label and controls together - everything inside the row's margin. */
     private final Div body;
+
+    /**
+     * The row of per-turn controls, built empty and hidden.
+     *
+     * <p>Present from construction rather than added when the turn settles, because it is a named
+     * group in the accessibility tree: a group created at the moment it acquires children is a
+     * group assistive technology was never told about.
+     */
     private final Div controls = new Div();
 
     /** True once the turn's text has been replaced by markup, or claimed by an error. */
@@ -111,8 +165,33 @@ final class MessageTurn extends Div {
     /** The store's handle on this turn, or null while the store has no record of it. */
     private String turnId;
 
+    /**
+     * The open editor, or null when this turn is not being edited.
+     *
+     * <p>Null is the whole of the "not editing" state, and the field is what {@link #closeEditor}
+     * checks: an editor is built on demand and thrown away on close rather than kept hidden, so a
+     * turn that is not being edited has no text area in the document to be tabbed into.
+     */
     private Div editPanel;
 
+    /**
+     * Builds a turn, either empty and about to stream or complete and read back from the store.
+     *
+     * <p>The two cases differ in one visible way and it is decided here: an assistant turn created
+     * with no text shows the waiting indicator, because that turn exists precisely to say an answer
+     * is coming. A turn created with text has nothing to wait for.
+     *
+     * <p>The controls are built hidden rather than omitted - see the field note - and no control is
+     * offered until the turn settles, since every one of them acts on a finished message.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param role who spoke; decides the styling and which controls this turn will ever offer
+     * @param text the message, or null for a turn that is about to be streamed into
+     * @param actions what this turn's controls invoke, never null
+     * @throws NullPointerException if the role or the actions are null, both of which would fail
+     *     later while painting rather than here
+     */
     MessageTurn(ConversationMessage.Role role, String text, Actions actions) {
         this.role = Objects.requireNonNull(role, "role");
         this.actions = Objects.requireNonNull(actions, "actions");
@@ -151,32 +230,76 @@ final class MessageTurn extends Div {
      * the store arrives with its id, and a turn that is being written gets one only once there is
      * something worth recording. Supplying it late has to be able to add the controls it unlocks,
      * so the row is rebuilt rather than assumed to have been drawn already.
+     *
+     * @param id the store's handle on this turn, never null - a turn is identified only once the
+     *     store has actually written it down
      */
     void identify(String id) {
         turnId = id;
         refreshControls();
     }
 
-    /** The store's handle on this turn, or null when the store has no record of it. */
+    /**
+     * The store's handle on this turn, or null when the store has no record of it.
+     *
+     * @return the store's id for this turn, or null when the store has no record of it yet - which
+     *     is the whole of the "not yet written down" state and is what disables the controls that
+     *     need one
+     */
     String turnId() {
         return turnId;
     }
 
+    /**
+     * Who spoke this turn.
+     *
+     * @return the role, never null; the view uses it to decide what a regenerate or an edit means
+     */
     ConversationMessage.Role role() {
         return role;
     }
 
-    /** The text as it was written or streamed, before any markdown in it was rendered. */
+    /**
+     * The text as it was written or streamed, before any markdown in it was rendered.
+     *
+     * @return the text exactly as typed or streamed, never null; empty for an assistant turn that
+     *     has not received its first token
+     */
     String text() {
         return raw.toString();
     }
 
+    /**
+     * Whether this is the reader's own message.
+     *
+     * <p>Asked in a dozen places, and named rather than compared inline because the two roles are
+     * not symmetrical: only the assistant's text is parsed as markdown, only it can stream, and only
+     * the reader's turn can be edited. A bare enum comparison at each site invites the next one to
+     * be written the wrong way round.
+     *
+     * @return true for the reader's turn, false for the assistant's
+     */
     private boolean fromUser() {
         return role == ConversationMessage.Role.USER;
     }
 
     // ------------------------------------------------------------------ the stream
 
+    /**
+     * Takes the next piece of a streaming answer and draws as much of it as can be committed to.
+     *
+     * <p>Null and empty tokens are ignored rather than rejected: a provider that emits a keep-alive
+     * frame is not an error, and throwing here would end an answer that is arriving correctly.
+     *
+     * <p>The first non-empty token is what replaces the waiting indicator, which is why the empty
+     * check happens before anything is drawn - an empty token that cleared the indicator would leave
+     * a bubble showing nothing at all while the answer was still on its way.
+     *
+     * <p>Must run on the Vaadin UI thread. The answer arrives on a background thread, so the caller
+     * is responsible for getting onto the UI thread before calling this.
+     *
+     * @param token the arriving text, possibly null or empty
+     */
     void append(String token) {
         if (token == null || token.isEmpty()) {
             return;
@@ -290,6 +413,10 @@ final class MessageTurn extends Div {
      * the children are compared by {@link #merge} as it descends. Attributes count as shape: they
      * are where this parser puts meaning a reader can see, so a node that kept its tag and changed
      * its href is a different node, not the same one with new text.
+     *
+     * @param drawn the node already in the document
+     * @param fresh the node the parser has just produced
+     * @return true when {@code fresh} may be written into {@code drawn} in place
      */
     private static boolean sameShape(Element drawn, Element fresh) {
         if (drawn.isTextNode() || fresh.isTextNode()) {
@@ -311,6 +438,9 @@ final class MessageTurn extends Div {
      * <p>The fresh children are taken as a list first. Handing one of them to {@link #merge} moves
      * it out of its own parent, which would renumber the siblings this loop has not reached yet -
      * a defect that shows up as a subtree drawn with its own children in the wrong order.
+     *
+     * @param drawn the node already in the document, mutated in place
+     * @param fresh the node the parser has just produced, read but not attached
      */
     private static void writeInto(Element drawn, Element fresh) {
         if (drawn.isTextNode()) {
@@ -325,6 +455,20 @@ final class MessageTurn extends Div {
         }
     }
 
+    /**
+     * Closes the turn: the answer is finished and everything provisional about it is resolved.
+     *
+     * <p>The four steps are one operation and are never called separately. Closing without
+     * rendering would leave the reader looking at raw markdown for good; rendering without
+     * refreshing the controls would leave a finished answer with no way to copy it. Ordering
+     * matters once: the waiting indicator is cleared before the markup is drawn, so an answer that
+     * arrived empty ends as an empty bubble rather than one that is still claiming to be thinking.
+     *
+     * <p>Safe to call on a turn that is already closed - {@link #renderAnswer} is guarded by
+     * {@code settled} - which is what lets the stopped and the completed paths share it.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
     void markComplete() {
         closed = true;
         showContent();
@@ -414,6 +558,8 @@ final class MessageTurn extends Div {
      * and the wait before the first token is the longest silence in the exchange. The dots are
      * decorative - the word beside them already says what is happening, and a screen reader should
      * not be read three bullets.
+     *
+     * @return the waiting indicator, detached
      */
     private static Span thinking() {
         Span waiting = new Span("Thinking");
@@ -422,7 +568,12 @@ final class MessageTurn extends Div {
         return waiting;
     }
 
-    /** The animated ellipsis, shared with the composer's own busy hint. */
+    /**
+     * The animated ellipsis, shared with the composer's own busy hint.
+     *
+     * @return a fresh element each call, because a component belongs to one place in one DOM and
+     *     the composer's hint and a turn's bubble both want one
+     */
     static Element dots() {
         Element dots = new Element("span");
         dots.getClassList().add("jc-dots");
@@ -473,6 +624,12 @@ final class MessageTurn extends Div {
      * pointer will find it. A second glyph may be supplied for controls that confirm themselves -
      * it is drawn into the same button and swapped for the first by the stylesheet, so the
      * confirmation costs no round trip and builds no markup at the browser.
+     *
+     * @param label the accessible name and the tooltip
+     * @param glyph the resting icon, from {@link Icons}
+     * @param onClick what the control does; handed the button so it can confirm on itself
+     * @param confirmationGlyph a second icon for a control that confirms itself, or null
+     * @return the control, detached
      */
     private NativeButton control(String label, String glyph, Consumer<NativeButton> onClick,
                                  String confirmationGlyph) {
@@ -481,6 +638,28 @@ final class MessageTurn extends Div {
         return button;
     }
 
+    /**
+     * Builds one icon-only control for the turn's action row.
+     *
+     * <p>An icon-only button has no text to fall back on, so the label is written twice - as
+     * {@code aria-label} for a screen reader and as the native {@code title} for a pointer - and
+     * both come from the same argument, which is what stops them disagreeing.
+     *
+     * <p>The confirmation glyph, when there is one, is added as a second child rather than swapped
+     * in on press. The stylesheet crossfades between the two, so the "done" state costs no server
+     * round trip at all; building it lazily would mean a round trip in the middle of the feedback.
+     *
+     * <p>A {@link NativeButton} rather than Vaadin's: there are up to four of these per turn and a
+     * transcript holds many turns, and the native element carries no client-side component with it.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param label the accessible name and the tooltip, never null
+     * @param glyph the resting icon, from {@link Icons}
+     * @param confirmationGlyph the icon shown briefly after a successful press, or null when the
+     *     control has nothing to confirm
+     * @return the control, detached; the caller places it
+     */
     private NativeButton iconButton(String label, String glyph, String confirmationGlyph) {
         NativeButton button = new NativeButton();
         button.addClassName("jc-msg-action");
@@ -496,6 +675,20 @@ final class MessageTurn extends Div {
         return button;
     }
 
+    /**
+     * Wraps a glyph in the span the action row sizes it with.
+     *
+     * <p>Thin, but it is the seam between the shared icon set and this row's own measurements: the
+     * base class from {@link Icons} sizes the SVG, and the class added here is what makes the two
+     * states of a confirming control stack on top of each other rather than sit side by side.
+     *
+     * <p>The glyph is decorative in every use - each button already carries its own accessible name
+     * - which {@link Icons#glyph} has already marked it as.
+     *
+     * @param glyph one of the {@link Icons} constants
+     * @param modifier an extra class, or null for the resting icon
+     * @return a detached span carrying the glyph
+     */
     private static Span icon(String glyph, String modifier) {
         Span span = Icons.glyph(glyph);
         span.addClassName("jc-msg-action__icon");
@@ -521,6 +714,9 @@ final class MessageTurn extends Div {
      * <p>What is copied is the answer as the model wrote it - the markdown, not the typeset text -
      * because the commonest thing a reader does with a copied answer is paste it somewhere that
      * understands markdown.
+     *
+     * @return the control, detached, carrying the turn's text as an element property and no
+     *     listener of its own
      */
     private NativeButton copyControl() {
         NativeButton button = iconButton(COPY_LABEL, Icons.COPY, Icons.CHECK);
@@ -577,6 +773,21 @@ final class MessageTurn extends Div {
         editor.focus();
     }
 
+    /**
+     * Builds one of the two controls under the editor.
+     *
+     * <p>The label and the visible text are separate arguments even though they usually agree,
+     * because these controls sit in pairs: "Ask again" beside "Cancel" is clear on screen, where the
+     * other control is visible, and ambiguous to a screen reader that reaches one of them alone.
+     * The accessible name therefore says what is being discarded; the button face stays short.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param label the accessible name, which may be longer than the face
+     * @param text the visible text on the button
+     * @param primary true for the confirming control, which the stylesheet weights differently
+     * @return the control, detached; the caller places it and attaches the listener
+     */
     private NativeButton editButton(String label, String text, boolean primary) {
         NativeButton button = new NativeButton(text);
         button.addClassName("jc-edit-button");
@@ -594,6 +805,8 @@ final class MessageTurn extends Div {
      * <p>A message edited down to nothing is refused where the reader can still see it, rather than
      * accepted and turned into a question the agent has to make something of - and rather than
      * silently discarding the turn it would have replaced.
+     *
+     * @param editor the open text area, whose current value is the reworded question
      */
     private void submitEdit(TextArea editor) {
         String edited = editor.getValue();
@@ -605,6 +818,21 @@ final class MessageTurn extends Div {
         actions.editAndResend(this, question);
     }
 
+    /**
+     * Takes the editor away and puts the message back.
+     *
+     * <p>The panel is removed rather than hidden, so a closed editor leaves no text area in the
+     * document for a keyboard reader to tab into - which is what hiding it with a class would.
+     *
+     * <p>The controls come back only if the turn is closed. That is not the same as "always": a turn
+     * still streaming has nothing finished to copy or regenerate, and restoring the row
+     * unconditionally would offer actions on a message that is still being written.
+     *
+     * <p>Idempotent, because it is reached from the cancel control, from a successful submit and
+     * from a re-render, and none of those knows what the others have done.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     */
     private void closeEditor() {
         if (editPanel == null) {
             return;

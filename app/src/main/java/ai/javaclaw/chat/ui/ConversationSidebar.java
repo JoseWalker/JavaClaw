@@ -59,6 +59,15 @@ import java.util.regex.Pattern;
  */
 class ConversationSidebar extends Nav {
 
+    /**
+     * How a date is written once a conversation is too old for a relative time.
+     *
+     * <p>Pinned to {@link Locale#ENGLISH} rather than the browser's locale, and not because the
+     * browser's is unavailable. Every other string in this interface is written in English in the
+     * source, so a month name resolved from the request would put a Spanish "mar" in a column of
+     * otherwise English chrome - one translated word is a stronger claim about localisation than no
+     * translation at all. See {@link DocumentLanguage} for the same decision about the document.
+     */
     private static final DateTimeFormatter ABSOLUTE_DAY = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH);
 
     /**
@@ -78,6 +87,16 @@ class ConversationSidebar extends Nav {
     private static final int TITLE_WIDTH = 38;
 
     /**
+     * The shape of the counter {@link ConversationTitles#forColumn} puts in front of a repeated label.
+     *
+     * <p>Anchored at the start and bounded in the digits, so it can only ever match the prefix the
+     * labelling pass writes and cannot be driven by the rest of a title. Six digits is more rows than
+     * a column could draw, and matching a bounded run rather than {@code \d+} is what keeps this off
+     * a title that happens to open with a bracketed number of its own.
+     */
+    private static final Pattern OCCURRENCE_MARKER = Pattern.compile("^\\(\\d{1,6}\\) ");
+
+    /**
      * What the column says where the rows it can date end and the rows it cannot begin.
      *
      * <p>Ordering is by recency, and a conversation this process never watched being used has no
@@ -92,29 +111,50 @@ class ConversationSidebar extends Nav {
      * This states the order the rows below are actually in, which is a fact the reader can use and
      * can check against the rows themselves; why they are in it stays available on the seam.
      */
-    /**
-     * The shape of the counter {@link ConversationTitles#forColumn} puts in front of a repeated label.
-     *
-     * <p>Anchored at the start and bounded in the digits, so it can only ever match the prefix the
-     * labelling pass writes and cannot be driven by the rest of a title. Six digits is more rows than
-     * a column could draw, and matching a bounded run rather than {@code \d+} is what keeps this off
-     * a title that happens to open with a bracketed number of its own.
-     */
-    private static final Pattern OCCURRENCE_MARKER = Pattern.compile("^\\(\\d{1,6}\\) ");
-
     private static final String SEAM_LABEL = "Ordered by name";
 
+    /**
+     * The whole of why, available on the seam itself for a reader who wants it.
+     *
+     * <p>It answers the two misreadings the label alone cannot: that the list is still loading, and
+     * that these rows are the oldest. Both are denied explicitly rather than left to inference,
+     * because the visible evidence - a block of rows with empty trailing edges - supports either.
+     */
     private static final String SEAM_EXPLANATION =
             "This session has not seen the conversations below being used, so there is no recency "
                     + "to sort them by and they are ordered by name instead. They are no older and "
                     + "no less complete than the ones above.";
 
+    /**
+     * Where the rows come from, re-read on every render rather than cached here.
+     *
+     * <p>Transient because the directory is an application bean: writing it into a passivated
+     * session would serialise the chat store's adapter along with it.
+     */
     private final transient ConversationDirectory directory;
+
+    /**
+     * What to do when a row is chosen. The column does not navigate; it reports, and the shell that
+     * owns the address decides - which is what keeps the URL and the transcript naming one thread.
+     */
     private final transient Consumer<ConversationSummary> onSelect;
 
+    /**
+     * The filter box. Held as a field because {@link #focusSearch()} has to reach it from the shell
+     * when the reader presses the search shortcut with the column shut.
+     */
     private final TextField search = new TextField();
+
+    /** The rows and their group headings, rebuilt whole on each render rather than patched. */
     private final Div list = new Div();
+
+    /** The control that shuts the column from inside it, which is the drawer's own exit on a phone. */
     private final Button collapse = new Button();
+
+    /**
+     * The foot of the column. Constructed here rather than in {@link #createFoot()} so that the
+     * component exists before any render runs and there is exactly one of it per column.
+     */
     private final UserMenu userMenu = new UserMenu();
 
     /** Groups the reader has folded away. Held by name, so the state survives a re-render. */
@@ -184,6 +224,26 @@ class ConversationSidebar extends Nav {
      */
     private transient Consumer<ConversationSummary> onActiveNamed;
 
+    /**
+     * Builds the column and draws its first render.
+     *
+     * <p>The active conversation is looked up immediately, and its absence is not an error: a chat
+     * the reader has just started has been written nowhere, so the store has never heard of it. The
+     * column stands a draft row in for it rather than showing an empty list, because a reader who
+     * has just been given a new chat and cannot see it in the list concludes it was not created.
+     *
+     * <p>Renders once here rather than waiting for attach, so the column is populated in the same
+     * round trip that creates it; the subscription that keeps it up to date is taken on attach,
+     * where it can also be released.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param directory where the rows come from, never null
+     * @param activeConversationId the conversation the shell is currently on; need not be in the
+     *     store, in which case a draft row is stood in for it
+     * @param onSelect told which conversation the reader chose; the column never navigates itself
+     * @param onCollapse invoked by the column's own close control, so the shell owns the state
+     */
     ConversationSidebar(ConversationDirectory directory,
                         String activeConversationId,
                         Consumer<ConversationSummary> onSelect,
@@ -209,6 +269,9 @@ class ConversationSidebar extends Nav {
      * has not been written to at all - reporting {@code now} was the row claiming a storage event
      * that had not happened. What marks it instead is {@code data-source="draft"} and the word the
      * row draws where a stored row draws its time, which is a difference a reader can see.
+     *
+     * @param id the conversation id the reader is currently in
+     * @return a summary marked as a draft, carrying no time at all rather than a fabricated one
      */
     private static ConversationSummary unsavedConversation(String id) {
         return new ConversationSummary(id, "New chat", "Nothing sent yet.", "Drafts", List.of(),
@@ -275,6 +338,8 @@ class ConversationSidebar extends Nav {
      *
      * <p>A browser tab closed between the naming call starting and finishing is the ordinary case,
      * not an error: nothing is lost, because the name is recorded whether or not anyone was looking.
+     *
+     * @param ui the UI to redraw on, captured while the column was attached
      */
     private void redrawOn(UI ui) {
         try {
@@ -289,6 +354,19 @@ class ConversationSidebar extends Nav {
 
     // ------------------------------------------------------------------ structure
 
+    /**
+     * The top of the column: the wordmark and the control that shuts it.
+     *
+     * <p>The close control is wired to the shell's callback rather than to anything here, because
+     * the column does not own whether it is showing - the shell does, and it stores the choice
+     * against the current arrangement. A column that hid itself would leave the shell's toggle
+     * announcing the wrong state.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param onCollapse what the close control invokes; supplied by the shell
+     * @return the head, already classed and wired; called once, from the constructor
+     */
     private Component createHead(Runnable onCollapse) {
         Span mark = new Span("JC");
         mark.addClassNames("jc-mark", "jc-mark--s");
@@ -313,6 +391,17 @@ class ConversationSidebar extends Nav {
         return head;
     }
 
+    /**
+     * The two controls above the list: start a new chat, and filter the ones that exist.
+     *
+     * <p>Both carry their keystroke twice - as a tooltip a sighted reader sees and as
+     * {@code aria-keyshortcuts} a screen reader announces - because a shortcut nobody can find is a
+     * trap rather than a feature, and the help dialog only reaches readers who open it.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @return the tool strip, already classed and wired; called once, from the constructor
+     */
     private Component createTools() {
         NativeButton newChat = new NativeButton();
         newChat.addClassName("jc-new-chat");
@@ -340,6 +429,18 @@ class ConversationSidebar extends Nav {
         return tools;
     }
 
+    /**
+     * Wraps the row list in the box that scrolls.
+     *
+     * <p>Two elements rather than one because the list has to be emptied and refilled on every
+     * render, and the scroll position belongs to the box, not to its contents: scrolling the element
+     * that gets {@code removeAll()} would jump the reader back to the top on every keystroke in the
+     * search box.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @return the scroll box containing the list; called once, from the constructor
+     */
     private Component createScroller() {
         list.addClassName("jc-sidebar__list");
         // Deliberately no role. It used to declare itself a list, and its items were the group
@@ -352,6 +453,17 @@ class ConversationSidebar extends Nav {
         return scroller;
     }
 
+    /**
+     * The bottom of the column, which is the session menu and nothing else.
+     *
+     * <p>A wrapper for one child looks redundant and is not: the foot is pinned below the scroll box
+     * by the stylesheet, so it has to be a sibling of the scroller rather than a child of it - the
+     * menu placed directly would scroll away with the rows.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @return the foot; called once, from the constructor
+     */
     private Component createFoot() {
         Div foot = new Div(userMenu);
         foot.addClassName("jc-sidebar__foot");
@@ -448,7 +560,7 @@ class ConversationSidebar extends Nav {
      * <p>The first row rather than the nearest one, because with the marked row gone there is no
      * nearest: what the reader is looking at is the top of a list that has just changed under them.
      *
-     * <h2>Why this asks about rendered rows and not about visible ones</h2>
+     * <h4>Why this asks about rendered rows and not about visible ones</h4>
      *
      * <p>It cannot ask about visible ones. Whether a row is on screen was decided by
      * {@code .jc-group[data-collapsed="true"] .jc-group__items {display: none}} in a stylesheet, and
@@ -578,6 +690,19 @@ class ConversationSidebar extends Nav {
                 .ifPresent(onActiveNamed);
     }
 
+    /**
+     * What the column says when the filter matched nothing.
+     *
+     * <p>Quotes the query back, and quotes it stripped. Showing the reader what was actually
+     * searched for is what turns "nothing here" into something they can act on - a stray trailing
+     * space or a word they did not mean to type is invisible in the box and obvious in the message.
+     *
+     * <p>The query is set as text, never as markup, so a search for {@code <b>} shows those
+     * characters.
+     *
+     * @param query the raw contents of the search box, never null
+     * @return the empty-state note; a fresh component, since one belongs to one place in one DOM
+     */
     private Component noMatches(String query) {
         return emptyNote("No chats match", "Nothing here matches “" + query.strip() + "”.");
     }
@@ -588,11 +713,27 @@ class ConversationSidebar extends Nav {
      * <p>Distinct from a search that found nothing, because the two are different problems and the
      * reader can only act on one of them. Telling someone with an empty store that their query
      * matched nothing invites them to go on clearing a box that was never the reason.
+     *
+     * @return the empty-state note; a fresh component each call
      */
     private Component noConversations() {
         return emptyNote("No chats yet", "Ask something and this is where it will be kept.");
     }
 
+    /**
+     * The shared shape of an empty state: a heading and a line under it.
+     *
+     * <p>Shared so the two cases that use it are visually identical and differ only in what they
+     * say. They are genuinely different problems - an empty store and a query that matched nothing -
+     * and the reader can act on only one of them, so the words differ; but a reader who has seen one
+     * should recognise the other immediately, and two hand-built layouts would drift.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param heading the short line, set as text and never as markup
+     * @param detail the sentence under it, likewise
+     * @return a fresh component each call
+     */
     private Component emptyNote(String heading, String detail) {
         Span title = new Span(heading);
         title.addClassName("jc-sidebar__empty-title");
@@ -614,7 +755,7 @@ class ConversationSidebar extends Nav {
      * away was told "collapsed" and left to work out which of the four headings had just swallowed
      * the row they were looking for.
      *
-     * <h2>A folded group is empty, not hidden</h2>
+     * <h4>A folded group is empty, not hidden</h4>
      *
      * <p>The rows used to be built regardless and hidden by the stylesheet, so a folded group left
      * conversations in the tab ring and in the arrow-key sequence that no reader could see - and the
@@ -638,6 +779,14 @@ class ConversationSidebar extends Nav {
      *
      * @param index this group's position in the current render, which is what the ids are built
      *              from; see {@link #renderList()} for why they are not built from the name
+     *
+     * @param name the group heading, which is also what {@link #collapsedGroups} records
+     * @param items every conversation in the group, drawn or not - the count on the heading comes
+     *     from this rather than from what was built
+     * @param forceOpen true when a filter is active, since a folded group would hide matches
+     * @param labels the column-wide labels, so a row's text is decided once for the whole render
+     *     rather than per group
+     * @return the group as a disclosure; its rows are absent, not hidden, when it is folded
      */
     private Component group(String name, List<ConversationSummary> items, boolean forceOpen,
                             Map<String, String> labels, int index) {
@@ -682,6 +831,22 @@ class ConversationSidebar extends Nav {
         return group;
     }
 
+    /**
+     * Folds a group away or unfolds it, then redraws the column.
+     *
+     * <p>Held by group name rather than by index, which is what makes the fold survive a render: the
+     * list is rebuilt whole on every change, so a positional record would move under the reader as
+     * conversations are added or filtered.
+     *
+     * <p>The full redraw is deliberate rather than lazy. A folded group is genuinely empty - its
+     * rows leave the document instead of being hidden - so there is nothing to toggle a class on,
+     * and that emptiness is what keeps folded rows out of the tab order and out of the accessibility
+     * tree, which hiding them with CSS would not.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param name the group heading, as drawn
+     */
     private void toggleGroup(String name) {
         if (!collapsedGroups.remove(name)) {
             collapsedGroups.add(name);
@@ -745,6 +910,8 @@ class ConversationSidebar extends Nav {
      * @param index this seam's position in the current render, which the description's id is built
      *              from - a grouped column can draw one per group, and two elements cannot share an
      *              id without the reference resolving to whichever came first
+     *
+     * @return the marker; a fresh component each call
      */
     private static Component seam(int index) {
         Span label = new Span(SEAM_LABEL);
@@ -864,7 +1031,7 @@ class ConversationSidebar extends Nav {
      * <p>Nothing is added when the label already is the whole title. A row the column draws in full
      * would otherwise be read out twice.
      *
-     * <h2>Why the occurrence marker comes with it</h2>
+     * <h4>Why the occurrence marker comes with it</h4>
      *
      * <p>Two threads that really did open with the same words have the same title, and the column
      * separates them with a leading "(2) " because there is nothing else honest to say about them.
@@ -924,6 +1091,9 @@ class ConversationSidebar extends Nav {
      * <p>A supplement, not a fallback. It used to be the only place a reader could tell two rows
      * apart, which meant they could not be told apart at all on a phone; now the label itself is
      * unique and this carries the untruncated topic and the excerpt for whoever hovers.
+     *
+     * @param summary the row being described
+     * @return the untruncated topic and excerpt, never null and never blank
      */
     private static String tooltip(ConversationSummary summary) {
         String preview = summary.preview().isBlank() ? summary.title() : summary.preview();
@@ -973,6 +1143,20 @@ class ConversationSidebar extends Nav {
         select(draft);
     }
 
+    /**
+     * What a click on a row does: mark it, then tell the shell.
+     *
+     * <p>In that order, and both halves are needed. Marking first means the column is already
+     * showing the reader's new place by the time the shell reacts, so a shell that navigates and
+     * re-renders finds the column agreeing with it rather than flipping a moment later.
+     *
+     * <p>The counterpart is {@link #showConversation}, which does only the first half - see its note
+     * for why the shell resolving an address must not come back through here.
+     *
+     * <p>Must run on the Vaadin UI thread.
+     *
+     * @param summary the row the reader pressed
+     */
     private void select(ConversationSummary summary) {
         showConversation(summary);
         onSelect.accept(summary);
@@ -1069,6 +1253,9 @@ class ConversationSidebar extends Nav {
      * is what this process can honestly say: the chat-memory interface exposes no timestamp of its
      * own, so a conversation last touched before the application started has none. Rows without one
      * simply give their title more room rather than showing a fabricated time.
+     *
+     * @param updatedAt when the conversation was last used, empty when this process never saw it
+     * @return the phrase to draw, or empty when there is no time to draw - never a fabricated one
      */
     private static Optional<String> relativeTime(Optional<Instant> updatedAt) {
         if (updatedAt.isEmpty()) {

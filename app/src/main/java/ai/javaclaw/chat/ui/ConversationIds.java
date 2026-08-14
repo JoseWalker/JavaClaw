@@ -37,6 +37,12 @@ final class ConversationIds {
      */
     private static final Pattern SHAPE = Pattern.compile("[a-z0-9][a-z0-9_-]{0,62}");
 
+    /**
+     * The source of the suffix. {@link SecureRandom} rather than {@link java.util.Random} because an
+     * id ends up in a URL and in a filename in a folder shared with other channels: a predictable
+     * sequence would let one guess a conversation it was never handed. Thread-safe by contract,
+     * which matters because ids are minted from whichever thread is starting a chat.
+     */
     private static final SecureRandom RANDOM = new SecureRandom();
 
     /** Long enough that two chats started in the same second cannot collide. */
@@ -67,6 +73,10 @@ final class ConversationIds {
         return LIVE + "-" + HexFormat.of().formatHex(bytes);
     }
 
+    /**
+     * Not instantiable. The grammar of an id and the way one is minted are facts about the format,
+     * not state anybody owns, so there is nothing an instance could usefully hold.
+     */
     private ConversationIds() {
     }
 }

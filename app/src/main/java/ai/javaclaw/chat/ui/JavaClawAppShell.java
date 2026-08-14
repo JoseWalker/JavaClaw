@@ -23,4 +23,12 @@ import com.vaadin.flow.component.dependency.StyleSheet;
 @StyleSheet(Lumo.STYLESHEET)
 @StyleSheet("/styles/javaclaw.css")
 public class JavaClawAppShell implements AppShellConfigurator {
+
+    /**
+     * Vaadin instantiates the shell reflectively, so a public no-argument constructor has to exist.
+     * It is written out rather than left implicit because an implicit one carries no documentation,
+     * and a reader arriving here needs to be told that the class is never constructed by our code.
+     */
+    public JavaClawAppShell() {
+    }
 }

@@ -30,15 +30,34 @@ import java.util.concurrent.ConcurrentHashMap;
 class ConversationActivity {
 
     /**
+     * Spring builds the single application-scoped instance through this constructor. It is written
+     * out rather than left implicit so the threading contract has somewhere to live: unlike the rest
+     * of this package, instances of this class are touched from the Vaadin UI thread and from the
+     * background threads that carry responses, which is why the map below is concurrent.
+     */
+    ConversationActivity() {
+    }
+
+    /**
      * Bound on how many conversations are remembered. Entries are cheap, but the map is keyed by a
      * value that ultimately arrives from outside, and an unbounded map keyed from outside is a leak
      * waiting for a reason. Well past any plausible number of conversations on one machine.
      */
     private static final int CAPACITY = 512;
 
+    /**
+     * Conversation id to the last moment this application saw it used. Concurrent because writes
+     * arrive from whichever thread is sending a message while the sidebar reads from the UI thread;
+     * the absence of an entry is meaningful and is never filled in with a guess.
+     */
     private final Map<String, Instant> lastActivity = new ConcurrentHashMap<>();
 
-    /** Notes that a conversation was just used. Ignores anything that is not a usable id. */
+    /**
+     * Notes that a conversation was just used. Ignores anything that is not a usable id.
+     *
+     * @param conversationId the conversation just used; null and malformed ids are ignored rather
+     *     than recorded under a key nothing will ever ask about
+     */
     void record(String conversationId) {
         recordAt(conversationId, Instant.now());
     }

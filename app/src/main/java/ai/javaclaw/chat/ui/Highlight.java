@@ -60,9 +60,16 @@ final class Highlight {
 
         /** Ordinary source: emitted as a text node, with no element of its own. */
         PLAIN(null),
+        /** A comment, line or block, including its delimiters. */
         COMMENT("comment"),
+
+        /** A string literal, including its quotes, because losing them would change the source. */
         STRING("string"),
+
+        /** A numeric literal, in whatever base or suffix the language spells it with. */
         NUMBER("number"),
+
+        /** A reserved word of the dialect. Distinguished from {@link #TYPE} for the tint alone. */
         KEYWORD("keyword"),
         /** A name the shape of a type, or a property key in a data format. */
         TYPE("type"),
@@ -71,13 +78,29 @@ final class Highlight {
         /** An annotation or decorator, at-sign included. */
         META("meta");
 
+        /**
+         * The stylesheet's name for this kind, or null for a run that needs no element at all.
+         * Stored as the bare modifier rather than the whole class list so the naming convention
+         * lives in exactly one place - {@link #className()} - and cannot drift between constants.
+         */
         private final String modifier;
 
+        /**
+         * Binds a kind to its stylesheet modifier. Called only by the constants above.
+         *
+         * @param modifier the modifier segment, or null for {@link #PLAIN}, which is emitted as a
+         *     bare text node because wrapping ordinary source would double the DOM of a code block
+         */
         Kind(String modifier) {
             this.modifier = modifier;
         }
 
-        /** The class the stylesheet paints, or null when this run needs no element at all. */
+        /**
+         * The class the stylesheet paints, or null when this run needs no element at all.
+         *
+         * @return the whole class list for this kind, or null for {@link #PLAIN}, which the caller must
+         *     read as "emit a bare text node" rather than as a missing class
+         */
         String className() {
             return modifier == null ? null : "jc-tok jc-tok--" + modifier;
         }
@@ -137,20 +160,40 @@ final class Highlight {
             false null nil none true undefined
             """);
 
+    /**
+     * Primitive names shared across the C family, tinted as types rather than as keywords. Kept
+     * apart from {@link #C_FAMILY} only so the two get different colours; the scanner treats a hit
+     * in either set the same way otherwise.
+     */
     private static final Set<String> C_TYPES = words("""
             bool boolean byte char double float int long number short signed string unsigned void
             """);
 
+    /**
+     * Java, Kotlin, Scala and the rest that run on the JVM, plus Dart, which reads the same way.
+     * One dialect for the family because the alternative is eight nearly identical tables, and a
+     * keyword the reader's language does not have is tinted rather than wrong - the failure mode is
+     * a word that looks reserved and is not, which is far cheaper than a missing scanner.
+     */
     private static final Dialect JVM = cFamily(merge(C_FAMILY, words("""
             companion constructor data expect fun in init inline internal is lateinit object open
             operator out override permits reified suspend tailrec val when where
             """)));
 
+    /**
+     * Rust, Go and the C-descended scripting languages, on the same reasoning as {@link #JVM}. They
+     * are grouped separately because their extra keywords would otherwise tint half the identifiers
+     * in a Java snippet.
+     */
     private static final Dialect SCRIPTING = cFamily(merge(C_FAMILY, words("""
             declare fn from impl in is loop match mod move mut pub ref self trait unsafe use where
             chan defer fallthrough func go map range select
             """)));
 
+    /**
+     * Python. Its own dialect rather than a C-family variant because it has none of the family's
+     * shape: no braces to key off, triple quotes that span lines, and a decorator syntax.
+     */
     private static final Dialect PYTHON = new Dialect(
             List.of("#"), null, null, "\"'", true, true,
             words("""
@@ -160,6 +203,10 @@ final class Highlight {
                     """),
             Set.of(), false, true, true, false);
 
+    /**
+     * Ruby. The only dialect here whose block comment is line-oriented rather than delimited, which
+     * is why {@code =begin} and {@code =end} are given as the pair rather than treated specially.
+     */
     private static final Dialect RUBY = new Dialect(
             List.of("#"), "=begin", "=end", "\"'", false, true,
             words("""
@@ -169,6 +216,10 @@ final class Highlight {
                     """),
             Set.of(), false, true, false, false);
 
+    /**
+     * Shell. Deliberately does not tint capitalised words as types: a shell script is full of
+     * environment variables in capitals, and painting {@code PATH} as a type is wrong on every line.
+     */
     private static final Dialect SHELL = new Dialect(
             List.of("#"), null, null, "\"'", false, true,
             words("""
@@ -177,6 +228,11 @@ final class Highlight {
                     """),
             Set.of(), false, false, false, false);
 
+    /**
+     * SQL. The one dialect that folds case, because {@code SELECT} and {@code select} are the same
+     * word and both spellings are written; and the one where a backslash does not escape, since a
+     * quote inside a string is doubled rather than escaped.
+     */
     private static final Dialect SQL = new Dialect(
             List.of("--"), "/*", "*/", "'\"", false, false,
             words("""
@@ -195,6 +251,11 @@ final class Highlight {
             words("false no null none true yes on off"),
             Set.of(), false, false, false, true);
 
+    /**
+     * CSS and its preprocessors. No line comment at all: {@code //} is valid in Sass and not in CSS,
+     * and tinting the rest of a line as a comment when it is a URL's double slash is the worse of
+     * the two mistakes.
+     */
     private static final Dialect STYLES = new Dialect(
             List.of(), "/*", "*/", "\"'", false, true,
             words("and from important media import include keyframes mixin not or supports to"),
@@ -208,6 +269,16 @@ final class Highlight {
      */
     private static final Map<String, Dialect> DIALECTS = dialects();
 
+    /**
+     * Builds the fence-label to dialect table once, at class initialisation.
+     *
+     * <p>A method rather than a chain of {@code Map.of} calls because the mapping is many-to-one -
+     * seven labels reach {@link #JVM} - and writing each pair out would be seven places for a typo
+     * to hide. Built into a mutable map and copied, so the result is immutable and shared.
+     *
+     * @return every label this file will scan, mapped to the dialect that reads it; a label absent
+     *     from the result gets no scanner at all, which is the deny-by-default rule
+     */
     private static Map<String, Dialect> dialects() {
         Map<String, Dialect> byName = new HashMap<>();
         for (String name : "java kotlin kt scala groovy gradle dart".split(" ")) {
@@ -289,12 +360,32 @@ final class Highlight {
         return lines;
     }
 
+    /**
+     * One empty source line, with the class the stylesheet hangs a line number on.
+     *
+     * @return a detached span; the caller fills it and adds it to the list
+     */
     private static Element line() {
         Element line = new Element("span");
         line.setAttribute("class", "jc-code__line");
         return line;
     }
 
+    /**
+     * Appends one run of a line, wrapping it only when the kind needs an element.
+     *
+     * <p>Plain source goes in as a bare text node rather than a span. Ordinary code is most of a
+     * snippet, so wrapping it would roughly double the DOM of every code block on the page for a
+     * class the stylesheet does nothing with.
+     *
+     * <p>Empty runs are dropped, which is what keeps a line split at a newline from gaining an empty
+     * span at each end; the text always goes through {@link Element#setText} or
+     * {@link Element#createText}, both of which escape, so a snippet containing markup shows it.
+     *
+     * @param line the line element being filled
+     * @param kind what this run was found to be
+     * @param text the run, which by construction contains no newline
+     */
     private static void append(Element line, Kind kind, String text) {
         if (text.isEmpty()) {
             return;
@@ -315,17 +406,58 @@ final class Highlight {
     /** One pass over one snippet. Holds the cursor so the rules below can read like rules. */
     private static final class Scanner {
 
+        /** The snippet being scanned, exactly as the model wrote it. Never modified. */
         private final String code;
+
+        /** The rules being applied. Fixed for the whole scan; a snippet has one language. */
         private final Dialect dialect;
+
+        /** Runs found so far, in source order. Concatenating their text reproduces {@link #code}. */
         private final List<Token> tokens = new ArrayList<>();
+
+        /**
+         * Characters that matched no rule, held until something else is about to be emitted.
+         * Buffering them is what makes ordinary source one run rather than one per character; it is
+         * committed by {@link #flush()}, which every rule calls before taking its own run.
+         */
         private final StringBuilder plain = new StringBuilder();
+
+        /**
+         * How far into {@link #code} the scan has reached. One cursor shared by every rule, because
+         * the scan is strictly left to right and never backtracks - a rule that cannot match returns
+         * false without having moved it.
+         */
         private int at;
 
+        /**
+         * Starts a scan over one snippet.
+         *
+         * <p>One instance per snippet and never reused: {@link #at} and {@link #tokens} are consumed
+         * by {@link #run()}, so a second call would append to the first call's result.
+         *
+         * @param code the snippet, never null and never empty - {@link #scan} guards both
+         * @param dialect the rules to read it with, never null; a snippet with no known dialect is
+         *     returned as one plain run without ever reaching here
+         */
         Scanner(String code, Dialect dialect) {
             this.code = code;
             this.dialect = dialect;
         }
 
+        /**
+         * Runs the scan to the end of the snippet.
+         *
+         * <p>The rules are tried in a fixed order and the order is the grammar: a comment before a
+         * string, so a quote inside a comment is not a string; a string before everything else, so a
+         * keyword inside one is not a keyword; a number before a word, so a digit is not an
+         * identifier's first character.
+         *
+         * <p>There is no failure path. A character that matches no rule is buffered as plain source
+         * and the cursor advances, which is what guarantees the scan terminates and that the output
+         * always reproduces the input exactly.
+         *
+         * @return the runs in order, immutable; empty only for an empty snippet
+         */
         List<Token> run() {
             while (at < code.length()) {
                 if (lineComment() || blockComment() || string() || annotation() || number() || word()) {
@@ -338,6 +470,15 @@ final class Highlight {
             return List.copyOf(tokens);
         }
 
+        /**
+         * Takes a line comment if one starts here.
+         *
+         * <p>Runs to the newline rather than including it, so the line splitter in {@link #lines}
+         * still sees the break as a break: a comment run that swallowed its newline would merge two
+         * source lines into one element.
+         *
+         * @return true when a comment was taken and the cursor moved
+         */
         private boolean lineComment() {
             for (String prefix : dialect.lineComments()) {
                 if (code.startsWith(prefix, at)) {
@@ -349,6 +490,15 @@ final class Highlight {
             return false;
         }
 
+        /**
+         * Takes a block comment if one starts here, terminated or not.
+         *
+         * <p>An unterminated block runs to the end of the snippet rather than being declined. That
+         * is what a compiler would say about the same text, and it is the shape a stopped answer
+         * leaves behind - declining would tint the remainder as code the reader is not looking at.
+         *
+         * @return true when a comment was taken and the cursor moved
+         */
         private boolean blockComment() {
             if (dialect.blockOpen() == null || !code.startsWith(dialect.blockOpen(), at)) {
                 return false;
@@ -360,6 +510,19 @@ final class Highlight {
             return true;
         }
 
+        /**
+         * Takes a string literal if one starts and <em>ends</em> here.
+         *
+         * <p>Unlike a block comment, an unterminated single-line string is declined outright. An
+         * apostrophe in a comment or in prose is far commoner in a snippet than a string that runs
+         * off the end of a line, and mistaking one for the other tints the whole rest of the block -
+         * so the asymmetry between this rule and {@link #blockComment()} is deliberate.
+         *
+         * <p>Triple quotes are the exception and do span lines, because in the languages that have
+         * them that is the only thing they are for.
+         *
+         * @return true when a complete string was taken and the cursor moved
+         */
         private boolean string() {
             char quote = code.charAt(at);
             if (dialect.quotes().indexOf(quote) < 0) {
@@ -391,13 +554,29 @@ final class Highlight {
             return false;
         }
 
-        /** Takes the string that ends at {@code end}, and decides whether it is a property key. */
+        /**
+         * Takes the string that ends at {@code end}, and decides whether it is a property key.
+         *
+         * @param end index just past the closing quote
+         * @return always true; the boolean exists so the caller can chain this with the other rules
+         */
         private boolean string(int end) {
             Kind kind = dialect.propertyKeys() && followedByColon(end) ? Kind.TYPE : Kind.STRING;
             take(kind, end);
             return true;
         }
 
+        /**
+         * Whether the next non-blank character after a string is a colon.
+         *
+         * <p>This is what tells a JSON or YAML key from a value, which is the one distinction that
+         * makes a data format readable at a glance. Only spaces and tabs are skipped, never a
+         * newline: a key and its colon are on the same line, and scanning past the break would make
+         * a bare string at the end of a list a key because the next line happened to have one.
+         *
+         * @param end index just past the closing quote
+         * @return true when a colon follows on the same line
+         */
         private boolean followedByColon(int end) {
             int i = end;
             while (i < code.length() && (code.charAt(i) == ' ' || code.charAt(i) == '\t')) {
@@ -406,6 +585,15 @@ final class Highlight {
             return i < code.length() && code.charAt(i) == ':';
         }
 
+        /**
+         * Takes an annotation or decorator, at-sign included.
+         *
+         * <p>A bare at-sign with no name after it is declined rather than taken as an empty
+         * annotation - it is an operator in several of these languages and an email address in a
+         * comment in all of them.
+         *
+         * @return true when an annotation was taken and the cursor moved
+         */
         private boolean annotation() {
             if (!dialect.annotations() || code.charAt(at) != '@') {
                 return false;
@@ -421,6 +609,19 @@ final class Highlight {
             return true;
         }
 
+        /**
+         * Takes a numeric literal, in whatever base, suffix or exponent the language spells it with.
+         *
+         * <p>Word characters are consumed as part of the number, which is what makes {@code 0x1F},
+         * {@code 100L} and {@code 1_000} single runs instead of a digit followed by an identifier.
+         * The price is that a malformed literal is still tinted as a number, which is the right way
+         * round: this is a highlighter, not a compiler.
+         *
+         * <p>Declined when the previous character is a word character, so the 8 in {@code utf8} is
+         * part of the name rather than a number stuck to the end of one.
+         *
+         * @return true when a number was taken and the cursor moved
+         */
         private boolean number() {
             char c = code.charAt(at);
             if (!Character.isDigit(c)) {
@@ -445,6 +646,16 @@ final class Highlight {
             return true;
         }
 
+        /**
+         * Takes an identifier-shaped run and hands it to {@link #classify} to be named.
+         *
+         * <p>The run is always taken, even when it classifies as {@link Kind#PLAIN}. Taking it as
+         * one token rather than letting the plain buffer eat it character by character is what makes
+         * the following character available to {@code classify} as a lookahead - which is how a
+         * function call is told from a bare name.
+         *
+         * @return true when a word was taken and the cursor moved
+         */
         private boolean word() {
             if (!isWordStart(code.charAt(at))) {
                 return false;
@@ -457,6 +668,22 @@ final class Highlight {
             return true;
         }
 
+        /**
+         * Decides what an identifier-shaped run actually is.
+         *
+         * <p>The order is from certain to speculative: a reserved word is one by definition, a
+         * declared type name likewise, a capitalised name is a convention, and a name against an
+         * opening parenthesis is an inference. Falling through to {@link Kind#PLAIN} rather than
+         * guessing further is deliberate - an untinted identifier is invisible, a wrongly tinted one
+         * is a claim about code the reader is trying to read.
+         *
+         * <p>No whitespace is allowed between the name and the parenthesis, which is what keeps
+         * {@code if (x)} from being read as a call.
+         *
+         * @param word the run's text
+         * @param end index just past the run, used as a one-character lookahead
+         * @return the kind, never null
+         */
         private Kind classify(String word, int end) {
             String probe = dialect.foldCase() ? word.toLowerCase(Locale.ROOT) : word;
             if (dialect.keywords().contains(probe)) {
@@ -473,13 +700,25 @@ final class Highlight {
             return end < code.length() && code.charAt(end) == '(' ? Kind.FUNCTION : Kind.PLAIN;
         }
 
-        /** Closes the run that ends at {@code end} and moves the cursor onto it. */
+        /**
+         * Closes the run that ends at {@code end} and moves the cursor onto it.
+         *
+         * @param kind what the run was found to be
+         * @param end index just past the run
+         */
         private void take(Kind kind, int end) {
             flush();
             tokens.add(new Token(kind, code.substring(at, end)));
             at = end;
         }
 
+        /**
+         * Commits the buffered plain source as one run, and empties the buffer.
+         *
+         * <p>Called by {@link #take} before every tinted run and once at the end of the scan, which
+         * together are what guarantee the output is in source order: a rule that appended its own
+         * token without flushing first would emit it ahead of the text before it.
+         */
         private void flush() {
             if (plain.isEmpty()) {
                 return;
@@ -489,32 +728,84 @@ final class Highlight {
         }
     }
 
+    /**
+     * Whether a character may begin an identifier.
+     *
+     * <p>Separate from {@link #isWordCharacter} by exactly one class: a digit may continue a name
+     * and may not start one, which is what lets {@link Scanner#number()} and
+     * {@link Scanner#word()} be tried in either order without disagreeing.
+     *
+     * <p>Underscore and dollar are included because they are legal name characters across all of
+     * these languages, and {@code $} in particular opens generated names in the JVM ones.
+     *
+     * @param c one character of the snippet
+     * @return true when an identifier may start here
+     */
     private static boolean isWordStart(char c) {
         return Character.isLetter(c) || c == '_' || c == '$';
     }
 
+    /**
+     * Whether a character may continue an identifier. Adds digits to {@link #isWordStart}.
+     *
+     * @param c one character of the snippet
+     * @return true when the character is part of the name in progress
+     */
     private static boolean isWordCharacter(char c) {
         return Character.isLetterOrDigit(c) || c == '_' || c == '$';
     }
 
     // ------------------------------------------------------------------ dialects
 
-    /** A C-shaped dialect: slashes for comments, three quote characters, capitalised types. */
+    /**
+     * A C-shaped dialect: slashes for comments, three quote characters, capitalised types.
+     *
+     * @param keywords the reserved words of the particular language, already merged
+     * @return a dialect sharing the family's comment, quote and casing rules
+     */
     private static Dialect cFamily(Set<String> keywords) {
         return new Dialect(List.of("//"), "/*", "*/", "\"'`", true, true,
                 keywords, C_TYPES, false, true, true, false);
     }
 
+    /**
+     * Reads a keyword table written as a text block into a set.
+     *
+     * <p>The tables are written as prose so they can be read and edited as prose; splitting on
+     * whitespace here is what lets them keep their line breaks and indentation. {@link Set#of} is
+     * used deliberately rather than a tolerant collector: a duplicated word throws at class
+     * initialisation, which is the earliest and loudest place a copy-paste in a table can surface.
+     *
+     * @param list a whitespace-separated table, with surrounding blank lines allowed
+     * @return the words, immutable
+     * @throws IllegalArgumentException if the table contains the same word twice
+     */
     private static Set<String> words(String list) {
         return Set.of(list.strip().split("\\s+"));
     }
 
+    /**
+     * Unions two keyword sets, tolerating the overlap {@link #words} would reject.
+     *
+     * <p>The dialect tables genuinely share words - {@code in} and {@code is} are in the C family
+     * and in the extensions layered on it - so the union has to accept a duplicate where the
+     * individual tables must not. Ordered internally only so the result is stable to read while
+     * debugging; nothing depends on the order.
+     *
+     * @param first the base table
+     * @param second the extension
+     * @return the union, immutable
+     */
     private static Set<String> merge(Set<String> first, Set<String> second) {
         Set<String> all = new LinkedHashSet<>(first);
         all.addAll(second);
         return Set.copyOf(all);
     }
 
+    /**
+     * Not instantiable. The dialect tables are shared and immutable and the scan state lives in
+     * {@link Scanner}, so an instance of this class would carry nothing.
+     */
     private Highlight() {
     }
 }
