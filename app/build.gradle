@@ -29,9 +29,21 @@ dependencies {
     implementation(libs.pebble.spring.starter)
 
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
-    // Vaadin refuses to start in development mode without its dev server. Scoped to
-    // developmentOnly so it never reaches a production image.
-    developmentOnly 'com.vaadin:vaadin-dev'
+    // The Vaadin BOM has to be imported a second time here. 'developmentOnly' does not extend
+    // 'implementation', so the `implementation platform(libs.bom.vaadin)` import at the top of this
+    // block never reaches it, and the versionless libs.vaadin.dev below then resolves to the empty
+    // version and fails :app:bootJar with "Could not find com.vaadin:vaadin-dev:". The root
+    // build.gradle re-imports the Spring Boot BOM onto this same configuration for the same reason.
+    // Declaring a version on the artifact instead resolves to the same graph today, so the argument
+    // for the BOM is not resolution but ownership: gradle/libs.versions.toml picks the Vaadin line
+    // once, and the plugin, the starter and the dev tools all have to move together on an upgrade.
+    developmentOnly platform(libs.bom.vaadin)
+    // Vaadin 25 no longer ships the dev tools transitively; without this artifact the servlet
+    // context listener aborts startup with "'vaadin-dev-server' not found." and the whole
+    // application fails to boot in development mode. 'developmentOnly' is Vaadin's own prescribed
+    // scope for it: Spring Boot puts the configuration on the runtime classpath for bootRun but
+    // excludes it from bootJar, so the dev server never reaches a production image.
+    developmentOnly libs.vaadin.dev
     runtimeOnly 'com.h2database:h2'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

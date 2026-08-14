@@ -13,6 +13,9 @@ bom-spring-ai = { module = "org.springframework.ai:spring-ai-bom", version.ref =
 bom-spring-modulith = { module = "org.springframework.modulith:spring-modulith-bom", version = "2.0.6" }
 bom-vaadin = { module = "com.vaadin:vaadin-bom", version.ref = "vaadin" }
 vaadin-spring-boot-starter = { module = "com.vaadin:vaadin-spring-boot-starter" }
+# Versionless like the starter above: the version comes from bom-vaadin, so the Vaadin line is
+# chosen once by 'vaadin' and the plugin, the starter and the dev tools cannot drift apart.
+vaadin-dev = { module = "com.vaadin:vaadin-dev" }
 spring-ai-agent-utils = { module = "org.springaicommunity:spring-ai-agent-utils", version = "0.9.0" }
 spring-ai-lucene = { module = "org.apache.lucene:lucene-core", version = "9.12.3" }
 spring-modulith-starter-test = { module = "org.springframework.modulith:spring-modulith-starter-test" }
