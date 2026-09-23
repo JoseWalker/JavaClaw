@@ -6,6 +6,7 @@ import com.vaadin.flow.component.ClickEvent;
 import com.vaadin.flow.component.ComponentUtil;
 import com.vaadin.flow.component.UI;
 import com.vaadin.flow.component.html.NativeButton;
+import com.vaadin.flow.component.internal.PendingJavaScriptInvocation;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -62,6 +63,42 @@ class McpServersSectionTest {
         McpServersSection section = new McpServersSection(configurationManager);
 
         assertThat(section.loadedServers()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a malformed streamable-http entry is skipped, not crashing the whole page")
+    void skipsMalformedStreamableHttpEntry() throws IOException {
+        ConfigurationManager configurationManager = mock(ConfigurationManager.class);
+        Map<String, Object> httpConnections = new LinkedHashMap<>();
+        // Empty from a hand edit, or left behind mid-shape by a previous write that failed partway
+        // through - either way, not the map this method expects.
+        httpConnections.put("broken", "");
+        httpConnections.put("healthy", Map.of("url", "https://example.com", "endpoint", "/mcp"));
+        when(configurationManager.readApplicationYaml())
+                .thenReturn(yamlWith(httpConnections, Map.of()));
+
+        McpServersSection section = new McpServersSection(configurationManager);
+
+        List<Map<String, Object>> servers = section.loadedServers();
+        assertThat(servers).hasSize(1);
+        assertThat(servers.getFirst().get("name")).isEqualTo("healthy");
+    }
+
+    @Test
+    @DisplayName("a malformed stdio entry is skipped, not crashing the whole page")
+    void skipsMalformedStdioEntry() throws IOException {
+        ConfigurationManager configurationManager = mock(ConfigurationManager.class);
+        Map<String, Object> stdioConnections = new LinkedHashMap<>();
+        stdioConnections.put("broken", null);
+        stdioConnections.put("healthy", Map.of("command", "npx"));
+        when(configurationManager.readApplicationYaml())
+                .thenReturn(yamlWith(Map.of(), stdioConnections));
+
+        McpServersSection section = new McpServersSection(configurationManager);
+
+        List<Map<String, Object>> servers = section.loadedServers();
+        assertThat(servers).hasSize(1);
+        assertThat(servers.getFirst().get("name")).isEqualTo("healthy");
     }
 
     @Test
@@ -122,6 +159,91 @@ class McpServersSectionTest {
 
         assertThat(section.urlField().isInvalid()).isTrue();
         assertThat(section.urlField().getErrorMessage()).isEqualTo("URL is required for streamable-http.");
+        verify(configurationManager, never()).updateProperties(anyMap());
+    }
+
+    @Test
+    @DisplayName("a streamable-http URL with no scheme is rejected rather than saved as 'null://null'")
+    void rejectsUrlWithoutScheme() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        section.nameField().setValue("no-scheme");
+        section.urlField().setValue("example.com/mcp");
+
+        click(section.addButton());
+
+        assertThat(section.urlField().isInvalid()).isTrue();
+        assertThat(section.urlField().getErrorMessage())
+                .isEqualTo("Enter a valid URL, including the http:// or https:// scheme.");
+        verify(configurationManager, never()).updateProperties(anyMap());
+    }
+
+    @Test
+    @DisplayName("a URL scheme other than http/https is rejected")
+    void rejectsNonHttpScheme() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        section.nameField().setValue("bad-scheme");
+        section.urlField().setValue("ftp://example.com/mcp");
+
+        click(section.addButton());
+
+        assertThat(section.urlField().isInvalid()).isTrue();
+        verify(configurationManager, never()).updateProperties(anyMap());
+    }
+
+    @Test
+    @DisplayName("a header name containing a dot is rejected instead of corrupting the saved config shape")
+    void rejectsDottedHeaderName() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        section.nameField().setValue("dotted-header");
+        section.urlField().setValue("https://example.com/mcp");
+        section.headersField().setValue("a.b: value");
+
+        click(section.addButton());
+
+        assertThat(section.headersField().isInvalid()).isTrue();
+        assertThat(section.headersField().getErrorMessage())
+                .isEqualTo("Header names may only contain letters, numbers, hyphens and underscores.");
+        verify(configurationManager, never()).updateProperties(anyMap());
+    }
+
+    @Test
+    @DisplayName("an env var name containing a dot is rejected instead of corrupting the saved config shape")
+    void rejectsDottedEnvName() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        section.nameField().setValue("dotted-env");
+        section.typeField().setValue("stdio");
+        section.commandField().setValue("npx");
+        section.envField().setValue("a.b=value");
+
+        click(section.addButton());
+
+        assertThat(section.envField().isInvalid()).isTrue();
+        assertThat(section.envField().getErrorMessage())
+                .isEqualTo("Environment variable names may only contain letters, numbers, hyphens and underscores.");
+        verify(configurationManager, never()).updateProperties(anyMap());
+    }
+
+    @Test
+    @DisplayName("two env var names that collide after key-splitting are rejected before they reach "
+            + "ConfigurationManager, rather than throwing")
+    void rejectsCollidingEnvNamesBeforeWriting() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        section.nameField().setValue("colliding-env");
+        section.typeField().setValue("stdio");
+        section.commandField().setValue("npx");
+        // "a" and "a.b" collide once ConfigurationManager.setNestedValue splits both on '.': "a"
+        // would already be a plain value where "a.b" needs a nested map. Rejecting the dot up front
+        // means this pair never reaches that code path at all.
+        section.envField().setValue("a=1\na.b=2");
+
+        click(section.addButton());
+
+        assertThat(section.envField().isInvalid()).isTrue();
         verify(configurationManager, never()).updateProperties(anyMap());
     }
 
@@ -211,6 +333,47 @@ class McpServersSectionTest {
         // Exactly one call, naming the connection's own key - not one call per leaf field
         // (url/endpoint/headers), because removing that single key removes the whole subtree.
         assertThat(captor.getValue()).isEqualTo("spring.ai.mcp.client.streamable-http.connections.gone");
+    }
+
+    @Test
+    @DisplayName("adding a server shows the restart notice and schedules a reload")
+    void addingServerSchedulesRestartReload() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        UI ui = UiHarness.ui();
+        ui.add(section);
+        section.nameField().setValue("my-server");
+        section.urlField().setValue("https://example.com/mcp");
+
+        click(section.addButton());
+
+        // Vaadin's own components queue their own executeJs calls as part of ordinary attach/sync
+        // machinery, so the reload's invocation is picked out by content rather than assumed to be
+        // the only entry in the queue.
+        List<PendingJavaScriptInvocation> reloadInvocations = UiHarness.drainPendingJavaScript(ui).stream()
+                .filter(invocation -> invocation.getInvocation().getExpression()
+                        .contains("setTimeout(() => location.reload(), $0)"))
+                .toList();
+        assertThat(reloadInvocations).hasSize(1);
+        assertThat(reloadInvocations.getFirst().getInvocation().getParameters().getFirst()).isEqualTo(4000);
+    }
+
+    @Test
+    @DisplayName("removing a server shows the restart notice and schedules a reload")
+    void removingServerSchedulesRestartReload() throws IOException {
+        ConfigurationManager configurationManager = emptyConfig();
+        McpServersSection section = new McpServersSection(configurationManager);
+        UI ui = UiHarness.ui();
+        ui.add(section);
+
+        section.removeServerForTest("gone", "streamable-http");
+
+        List<PendingJavaScriptInvocation> reloadInvocations = UiHarness.drainPendingJavaScript(ui).stream()
+                .filter(invocation -> invocation.getInvocation().getExpression()
+                        .contains("setTimeout(() => location.reload(), $0)"))
+                .toList();
+        assertThat(reloadInvocations).hasSize(1);
+        assertThat(reloadInvocations.getFirst().getInvocation().getParameters().getFirst()).isEqualTo(4000);
     }
 
     private static ConfigurationManager emptyConfig() throws IOException {

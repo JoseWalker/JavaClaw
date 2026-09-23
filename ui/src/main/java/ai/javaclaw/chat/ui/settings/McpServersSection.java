@@ -50,6 +50,20 @@ class McpServersSection extends Div {
     /** The other of the two server types {@code S5_McpStep} supports. */
     private static final String STDIO = "stdio";
 
+    /**
+     * What a server name, header name or environment variable name is allowed to contain.
+     *
+     * <p>{@code ConfigurationManager.setNestedValue} splits every property key it is given on {@code
+     * "."} to walk/build the nested YAML map, so a name containing a dot does not save as a single
+     * value - it saves as an extra, unintended level of nesting under whatever came before the dot,
+     * and if that shorter path already holds a plain value (rather than a map) from an unrelated key,
+     * the cast in {@code setNestedValue} throws instead of failing gracefully. Restricting every name
+     * this page writes into a property key to this pattern keeps every key exactly one segment long,
+     * so it can never collide with or nest under another. This is the same pattern the server-name
+     * field already validated against; headers and environment variable names now share it too.
+     */
+    private static final String NAME_PATTERN = "[a-zA-Z0-9_-]+";
+
     /** Property prefix for a streamable-http connection's keys, mirroring {@code S5_McpStep}. */
     private static final String HTTP_BASE = "spring.ai.mcp.client.streamable-http.connections.";
 
@@ -153,7 +167,7 @@ class McpServersSection extends Div {
             nameField.setInvalid(true);
             return;
         }
-        if (!name.matches("[a-zA-Z0-9_-]+")) {
+        if (!name.matches(NAME_PATTERN)) {
             nameField.setErrorMessage("Server name may only contain letters, numbers, hyphens and underscores.");
             nameField.setInvalid(true);
             return;
@@ -188,12 +202,12 @@ class McpServersSection extends Div {
     }
 
     /**
-     * Validates the URL field and, when it passes, builds the properties a streamable-http server
-     * needs.
+     * Validates the URL and header fields and, when both pass, builds the properties a
+     * streamable-http server needs.
      *
      * @param name the already-validated, unique server name
-     * @return the properties to write for a streamable-http server, or null when the URL failed
-     *     validation - the URL field's own error message is set before returning null
+     * @return the properties to write for a streamable-http server, or null when the URL or a header
+     *     name failed validation - the failing field's own error message is set before returning null
      */
     private Map<String, Object> buildStreamableHttpProperties(String name) {
         String url = trim(urlField.getValue());
@@ -210,20 +224,63 @@ class McpServersSection extends Div {
             urlField.setInvalid(true);
             return null;
         }
+        // A syntactically valid URI is not necessarily one this page can use: "example.com/mcp" with
+        // no scheme parses fine as a path-only URI, with both getScheme() and getHost() null, and
+        // would otherwise be saved as the literal string "null://null" below - a server entry that
+        // looks saved but fails at connection time on every restart until someone notices.
+        if (!isHttpOrHttps(uri.getScheme()) || uri.getHost() == null) {
+            urlField.setErrorMessage("Enter a valid URL, including the http:// or https:// scheme.");
+            urlField.setInvalid(true);
+            return null;
+        }
+        Map<String, String> headers = parseColonSeparated(headersField.getValue());
+        if (!allNamesValid(headers.keySet())) {
+            headersField.setErrorMessage(
+                    "Header names may only contain letters, numbers, hyphens and underscores.");
+            headersField.setInvalid(true);
+            return null;
+        }
         Map<String, Object> props = new LinkedHashMap<>();
         props.put(HTTP_BASE + name + ".url", uri.getScheme() + "://" + uri.getAuthority());
         props.put(HTTP_BASE + name + ".endpoint", uri.getPath());
-        parseColonSeparated(headersField.getValue())
-                .forEach((k, v) -> props.put(HTTP_BASE + name + ".headers." + k, v));
+        headers.forEach((k, v) -> props.put(HTTP_BASE + name + ".headers." + k, v));
         return props;
     }
 
     /**
-     * Validates the command field and, when it passes, builds the properties a stdio server needs.
+     * Whether a URI scheme is one this page's saved {@code url} property can be dereferenced with.
+     *
+     * @param scheme a URI's scheme, or null when the URI had none
+     * @return true only for {@code http} or {@code https}, case-insensitively
+     */
+    private static boolean isHttpOrHttps(String scheme) {
+        return "http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme);
+    }
+
+    /**
+     * Whether every name in a set is safe to use as one segment of a {@link ConfigurationManager}
+     * property key; see {@link #NAME_PATTERN}.
+     *
+     * @param names header or environment variable names parsed from a form field
+     * @return true when every name matches {@link #NAME_PATTERN}; true for an empty set
+     */
+    private static boolean allNamesValid(Iterable<String> names) {
+        for (String name : names) {
+            if (!name.matches(NAME_PATTERN)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Validates the command and environment fields and, when both pass, builds the properties a
+     * stdio server needs.
      *
      * @param name the already-validated, unique server name
-     * @return the properties to write for a stdio server, or null when the command failed
-     *     validation - the command field's own error message is set before returning null
+     * @return the properties to write for a stdio server, or null when the command or an environment
+     *     variable name failed validation - the failing field's own error message is set before
+     *     returning null
      */
     private Map<String, Object> buildStdioProperties(String name) {
         String command = trim(commandField.getValue());
@@ -232,14 +289,20 @@ class McpServersSection extends Div {
             commandField.setInvalid(true);
             return null;
         }
+        Map<String, String> env = parseEqualsSeparated(envField.getValue());
+        if (!allNamesValid(env.keySet())) {
+            envField.setErrorMessage(
+                    "Environment variable names may only contain letters, numbers, hyphens and underscores.");
+            envField.setInvalid(true);
+            return null;
+        }
         Map<String, Object> props = new LinkedHashMap<>();
         props.put(STDIO_BASE + name + ".command", command);
         List<String> args = parseLines(argsField.getValue());
         if (!args.isEmpty()) {
             props.put(STDIO_BASE + name + ".args", args);
         }
-        parseEqualsSeparated(envField.getValue())
-                .forEach((k, v) -> props.put(STDIO_BASE + name + ".env." + k, v));
+        env.forEach((k, v) -> props.put(STDIO_BASE + name + ".env." + k, v));
         return props;
     }
 
@@ -283,7 +346,9 @@ class McpServersSection extends Div {
     private void clearErrors() {
         nameField.setInvalid(false);
         urlField.setInvalid(false);
+        headersField.setInvalid(false);
         commandField.setInvalid(false);
+        envField.setInvalid(false);
     }
 
     /** Rebuilds {@link #serverList} from what is on disk right now. */
@@ -320,8 +385,14 @@ class McpServersSection extends Div {
      * Reads the current server list from {@code application.private.yaml}, the same navigation {@code
      * S5_McpStep.loadServersFromConfig} does.
      *
-     * @return every configured server, streamable-http first then stdio; empty when none are
-     *     configured or the file cannot be read
+     * <p>A connection entry that is not itself a map - empty from a hand edit, or left behind
+     * mid-shape by a previous write that failed partway through - is skipped rather than crashing
+     * this method: every caller here is either rendering the whole Settings page or validating a new
+     * server name against the existing list, and one bad entry in the file is not a reason to lock
+     * the reader out of the page that is the only reasonable way for them to fix or remove it.
+     *
+     * @return every configured server, streamable-http first then stdio, skipping any entry that is
+     *     not a map; empty when none are configured or the file cannot be read
      */
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> loadServersFromConfig() {
@@ -336,6 +407,11 @@ class McpServersSection extends Div {
             Map<String, Object> httpConns = navigateTo(mcp, "streamable-http", "connections");
             if (httpConns != null) {
                 httpConns.forEach((name, v) -> {
+                    if (!(v instanceof Map)) {
+                        log.warn("Skipping malformed streamable-http MCP server entry '{}': "
+                                + "expected a map, found {}", name, v == null ? "null" : v.getClass());
+                        return;
+                    }
                     Map<String, Object> conn = (Map<String, Object>) v;
                     Map<String, Object> server = new LinkedHashMap<>();
                     server.put("name", name);
@@ -350,6 +426,11 @@ class McpServersSection extends Div {
             Map<String, Object> stdioConns = navigateTo(mcp, "stdio", "connections");
             if (stdioConns != null) {
                 stdioConns.forEach((name, v) -> {
+                    if (!(v instanceof Map)) {
+                        log.warn("Skipping malformed stdio MCP server entry '{}': expected a map, "
+                                + "found {}", name, v == null ? "null" : v.getClass());
+                        return;
+                    }
                     Map<String, Object> conn = (Map<String, Object>) v;
                     Map<String, Object> server = new LinkedHashMap<>();
                     server.put("name", name);

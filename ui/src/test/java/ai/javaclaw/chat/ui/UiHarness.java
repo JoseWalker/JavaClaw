@@ -1,6 +1,7 @@
 package ai.javaclaw.chat.ui;
 
 import com.vaadin.flow.component.UI;
+import com.vaadin.flow.component.internal.PendingJavaScriptInvocation;
 import com.vaadin.flow.dom.DebouncePhase;
 import com.vaadin.flow.dom.DomEvent;
 import com.vaadin.flow.dom.Element;
@@ -157,6 +158,32 @@ public final class UiHarness {
         // stamps this field; so does this.
         event.put(JsonConstants.EVENT_DATA_PHASE, DebouncePhase.TRAILING.getIdentifier());
         listeners.fireEvent(new DomEvent(element, "window-resize", event));
+    }
+
+    /**
+     * The JavaScript invocations a UI has queued to send to its browser, when there is no browser for
+     * them to reach.
+     *
+     * <p>{@code RestartNotice.showAndScheduleReload} is the motivating case: it schedules a reload
+     * through {@code Element.executeJs}, and a test asserting that a save actually triggered it has no
+     * other way to observe that without a real client connection. Vaadin queues an {@code executeJs}
+     * call on the owning {@link UI}'s session-side state rather than sending it immediately, so
+     * draining that queue - the same operation the server uses to decide what is "sent" on a real
+     * response - is a faithful way to prove the call happened, not a simulation of one.
+     *
+     * <p>{@code Element.executeJs} does not queue its invocation directly - it registers a callback
+     * for the state tree's "before client response" phase, the same deferred-work queue {@link
+     * #press} and {@link #resizeTo} already have to drain before their own assertions hold, and for
+     * the same reason: nothing outside a real request drains it on its own here.
+     *
+     * @param ui the UI to drain; must be backed by a session that can answer {@code checkHasLock()},
+     *     like the one {@link #ui()} returns
+     * @return every JavaScript invocation queued on {@code ui} so far, in queue order; empty when
+     *     nothing has called {@code executeJs} on a component attached to it
+     */
+    public static List<PendingJavaScriptInvocation> drainPendingJavaScript(UI ui) {
+        ((StateTree) ui.getElement().getNode().getOwner()).runExecutionsBeforeClientResponse();
+        return ui.getInternals().dumpPendingJavaScriptInvocations();
     }
 
     /** A session that exists and holds no lock, which is all the UI is asked for here. */
