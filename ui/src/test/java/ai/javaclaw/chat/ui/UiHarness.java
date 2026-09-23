@@ -38,8 +38,15 @@ import java.util.List;
  * session here is a stub with the lock check answered rather than satisfied: these tests run the
  * whole exchange on the calling thread, so there is nothing to lock and nobody to lock against,
  * and a real session needs a servlet and a deployment configuration to exist at all.
+ *
+ * <p>The class and {@link #ui()} are public rather than package-private so that {@code
+ * ai.javaclaw.chat.ui.settings}'s tests can reuse this harness too, for the same reason any of this
+ * package's own tests do: a component under test that calls {@code Notification.show} or {@code
+ * Element.executeJs} needs a session capable of draining deferred work, and duplicating that stub
+ * session in a second package would be two copies free to drift apart. The remaining methods stay
+ * package-private because nothing outside this package currently needs them.
  */
-final class UiHarness {
+public final class UiHarness {
 
     private UiHarness() {
     }
@@ -49,7 +56,7 @@ final class UiHarness {
      *
      * @return a fresh UI with a stub session already set
      */
-    static UI ui() {
+    public static UI ui() {
         return ui(session());
     }
 

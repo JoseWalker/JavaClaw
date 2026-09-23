@@ -18,7 +18,7 @@ import java.util.List;
  * <p>JavaClaw has no accounts, so this used to name the session instead - an avatar, "This
  * session", "No account needed" - rather than pretend to be an account switcher. A reviewer looked
  * at that row and asked for it to go: there is no account behind it and none planned yet, so it was
- * a claim about identity nobody had asked to see, sitting in front of the three items that actually
+ * a claim about identity nobody had asked to see, sitting in front of the four items that actually
  * do something. The row is gone; what opens when the trigger is pressed is not, because that part
  * was never in question. Every item in the panel still does something - a menu of greyed-out
  * promises is worse than a shorter menu.
@@ -49,14 +49,21 @@ import java.util.List;
  * the accessibility tree carried an unnamed inner menu level nobody intended.
  *
  * <p>Two ways out: implement roving tabindex with Arrow, Home and End, or stop claiming to be a
- * menu. This is three buttons that answer to Enter and Space, which is what a button is, so the
+ * menu. This is four buttons that answer to Enter and Space, which is what a button is, so the
  * claim went rather than the behaviour. What is left is a disclosure - a trigger with
- * {@code aria-expanded}, a named group, three ordinary buttons - and every part of that is true.
+ * {@code aria-expanded}, a named group, four ordinary buttons - and every part of that is true.
  */
 class UserMenu extends Div {
 
     /** The pre-Vaadin chat UI, still served outside the Vaadin URL mapping. */
     private static final String CLASSIC_CHAT_PATH = "/chat";
+
+    /**
+     * The settings route, named as a string rather than by importing {@code SettingsView} directly -
+     * see {@link #openSettings()}. Kept in sync with {@code @Route("settings")} on that class by
+     * hand, the same way {@link #CLASSIC_CHAT_PATH} is kept in sync with the classic chat's mapping.
+     */
+    private static final String SETTINGS_PATH = "settings";
 
     /**
      * The trigger's own width: the sidebar column less its two gutters and its divider. Set on the
@@ -141,7 +148,7 @@ class UserMenu extends Div {
         menu.setRole("group");
         menu.setAriaLabel(PANEL_LABEL);
         // Focus goes into the panel when it opens, and it has to. The panel is teleported to the
-        // end of the document, so a reader who left it unfocused could not Tab to it: the three
+        // end of the document, so a reader who left it unfocused could not Tab to it: the four
         // buttons were on screen and unreachable without a pointer. This also gives the panel a
         // focus trap and hands focus back to the trigger when it closes, which is what makes the
         // trip reversible. It used to be off, to keep an accent ring from appearing the moment the
@@ -166,6 +173,7 @@ class UserMenu extends Div {
         });
 
         item(items, menu, "Keyboard shortcuts", this::showKeyboardShortcuts);
+        item(items, menu, "Settings", UserMenu::openSettings);
         item(items, menu, "Open the classic chat", UserMenu::openClassicChat);
         item(items, menu, "About JavaClaw", () -> aboutDialog().open());
     }
@@ -227,6 +235,16 @@ class UserMenu extends Div {
      */
     private static void openClassicChat() {
         UI.getCurrent().getPage().setLocation(CLASSIC_CHAT_PATH);
+    }
+
+    /**
+     * Opens the settings page - the one item here that stays inside the Vaadin UI, because {@code
+     * ai.javaclaw.chat.ui.settings.SettingsView} is a router target under this same {@code
+     * MainLayout} rather than a page served outside it. Navigated by route string rather than by
+     * class reference so this class does not need to import a sibling package's view just to name it.
+     */
+    private static void openSettings() {
+        UI.getCurrent().navigate(SETTINGS_PATH);
     }
 
     /**

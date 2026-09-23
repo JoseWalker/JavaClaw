@@ -457,7 +457,7 @@ class KeyboardAccessTest {
      * show above it to go - an avatar, "This session", "No account needed" - because the
      * application has no accounts behind that row. This pins the split: the trigger renders none of
      * that text and still has a name a screen reader can announce, and the panel it opens still
-     * carries all three items unchanged.
+     * carries all four items - "Settings" joined the other three afterwards, unrelated to this fix.
      */
     @Test
     @DisplayName("the session trigger dropped its identity row but kept its menu")
@@ -478,7 +478,8 @@ class KeyboardAccessTest {
                 .filter(element -> element.getClassList().contains("jc-menu__item"))
                 .map(Element::getTextRecursively)
                 .toList();
-        assertThat(items).containsExactly("Keyboard shortcuts", "Open the classic chat", "About JavaClaw");
+        assertThat(items).containsExactly(
+                "Keyboard shortcuts", "Settings", "Open the classic chat", "About JavaClaw");
     }
 
     /**
