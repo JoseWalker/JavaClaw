@@ -51,6 +51,17 @@ class ProviderSection extends Div {
     private static final String PROPERTY_BASE =
             "agent.llm.providers." + LlmProviderProperties.DEFAULT_PROVIDER_NAME;
 
+    /**
+     * Where the provider id lived before named providers existed - what {@code S2_ProviderStep}
+     * read/wrote until upstream #70 introduced {@link #PROPERTY_BASE}. Read-only, and only consulted
+     * when {@link #PROPERTY_BASE}{@code .provider} is blank: a reader who configured JavaClaw before
+     * that migration has a real, working setup under this key, and a page that cannot see it looks
+     * exactly like a page that reset their configuration to nothing - the two are indistinguishable to
+     * someone who has never read this class. A save here always writes {@link #PROPERTY_BASE} only
+     * (see {@link #save()}), so every save is also, incidentally, one reader's migration off this key.
+     */
+    private static final String LEGACY_PROVIDER_KEY = "spring.ai.model.chat";
+
     /** Resolves a provider id to the object the rest of the form validates and saves against. */
     private final AgentOnboardingProviders agentOnboardingProviders;
 
@@ -146,15 +157,36 @@ class ProviderSection extends Div {
      * S3_CredentialsStep.prepareModel} reads for its prefill - except {@link #apiKeyField}, which
      * stays blank; see the class note on why.
      *
+     * <p>Falls back to {@link #LEGACY_PROVIDER_KEY} and its matching pre-#70 model/API-key keys
+     * whenever the current-format keys are blank, so a reader who configured JavaClaw before that
+     * migration sees their real setup here instead of an apparently-reset page - see {@link
+     * #LEGACY_PROVIDER_KEY}. The fallback is read-only and per-field: a reader with a new-format
+     * provider but no new-format model (unlikely, but not impossible after a partial manual edit)
+     * still gets the legacy model value rather than a blank one.
+     *
      * @param environment application configuration, read once
      */
     private void prefill(Environment environment) {
         String providerId = environment.getProperty(PROPERTY_BASE + ".provider", "");
+        if (providerId.isBlank()) {
+            providerId = environment.getProperty(LEGACY_PROVIDER_KEY, "");
+        }
         agentOnboardingProviders.findById(providerId).ifPresent(providerField::setValue);
-        modelField.setValue(environment.getProperty(PROPERTY_BASE + ".model", ""));
+
+        String model = environment.getProperty(PROPERTY_BASE + ".model", "");
+        String legacyApiKey = "";
+        if (!providerId.isBlank()) {
+            String legacyBase = "spring.ai." + providerId;
+            if (model.isBlank()) {
+                model = environment.getProperty(legacyBase + ".chat.options.model", "");
+            }
+            legacyApiKey = environment.getProperty(legacyBase + ".api-key", "");
+        }
+        modelField.setValue(model);
         baseUrlField.setValue(environment.getProperty(PROPERTY_BASE + ".base-url", ""));
 
-        hasStoredApiKey = StringUtils.hasText(environment.getProperty(PROPERTY_BASE + ".api-key", ""));
+        hasStoredApiKey = StringUtils.hasText(environment.getProperty(PROPERTY_BASE + ".api-key", ""))
+                || StringUtils.hasText(legacyApiKey);
         apiKeyField.setPlaceholder(
                 hasStoredApiKey ? "Leave blank to keep the current key" : "Enter an API key");
         clearApiKeyButton.setVisible(hasStoredApiKey);

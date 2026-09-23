@@ -1126,13 +1126,19 @@ class StylesheetClaimsTest {
      * textareas are focusable in their own right and their ring is drawn on the field around them -
      * .jc-composer__field on :focus-within and .jc-message__editor's own input-field part.
      *
+     * <p>.jc-main__content > .jc-settings holds nothing but form controls and buttons from its first
+     * scrollable pixel to its last - unlike --jc-sidebar__scroll, which leads with a header before its
+     * first button, this one has no empty run before a focusable child either. Measured live the same
+     * way the sidebar exemption above was: five Tabs from the page heading landed on a select, three
+     * inputs and a password-field toggle, never once on the scroll container itself.
+     *
      * <p>What is deliberately <em>not</em> here is anything holding only prose: a code block, a wide
      * table and a display formula each scroll sideways with nothing focusable inside, so each is a
      * real tab stop and each needs the ring this sheet draws everywhere else.
      */
     private static final List<String> SCROLLERS_WITHOUT_A_TAB_STOP = List.of(
             ".jc-sidebar__scroll", ".jc-message__editor > textarea",
-            ".jc-composer vaadin-text-area > textarea");
+            ".jc-composer vaadin-text-area > textarea", ".jc-main__content > .jc-settings");
 
     /**
      * That every scroll container a keyboard can reach answers it with this product's ring.

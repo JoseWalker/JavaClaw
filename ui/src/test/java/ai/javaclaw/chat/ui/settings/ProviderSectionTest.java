@@ -90,6 +90,54 @@ class ProviderSectionTest {
     }
 
     @Test
+    @DisplayName("falls back to the pre-#70 legacy keys when the current-format keys are blank")
+    void prefillsFromLegacyKeysWhenCurrentFormatIsBlank() {
+        FakeProvider ollama = new FakeProvider("ollama", "Ollama", false);
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.ai.model.chat", "ollama")
+                .withProperty("spring.ai.ollama.chat.options.model", "gemma4:31b-cloud");
+
+        ProviderSection section =
+                new ProviderSection(mock(ConfigurationManager.class), environment, providers(ollama));
+
+        assertThat(section.providerField().getValue()).isEqualTo(ollama);
+        assertThat(section.modelField().getValue()).isEqualTo("gemma4:31b-cloud");
+    }
+
+    @Test
+    @DisplayName("a legacy API key is still reported as stored, even though its value is never read into the field")
+    void legacyApiKeyCountsAsStored() {
+        FakeProvider openai = new FakeProvider("openai", "OpenAI", true);
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.ai.model.chat", "openai")
+                .withProperty("spring.ai.openai.api-key", "sk-legacy");
+
+        ProviderSection section =
+                new ProviderSection(mock(ConfigurationManager.class), environment, providers(openai));
+
+        assertThat(section.apiKeyField().getValue()).isEmpty();
+        assertThat(section.clearApiKeyButton().isVisible()).isTrue();
+    }
+
+    @Test
+    @DisplayName("current-format keys win over legacy ones when both are present")
+    void currentFormatTakesPrecedenceOverLegacy() {
+        FakeProvider openai = new FakeProvider("openai", "OpenAI", true);
+        FakeProvider ollama = new FakeProvider("ollama", "Ollama", false);
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("spring.ai.model.chat", "ollama")
+                .withProperty("spring.ai.ollama.chat.options.model", "gemma4:31b-cloud")
+                .withProperty(PROVIDER_KEY, "openai")
+                .withProperty(MODEL_KEY, "gpt-4o");
+
+        ProviderSection section = new ProviderSection(mock(ConfigurationManager.class), environment,
+                providers(openai, ollama));
+
+        assertThat(section.providerField().getValue()).isEqualTo(openai);
+        assertThat(section.modelField().getValue()).isEqualTo("gpt-4o");
+    }
+
+    @Test
     @DisplayName("refuses to save a blank model, matching S3_CredentialsStep's message")
     void rejectsBlankModel() throws IOException {
         FakeProvider openai = new FakeProvider("openai", "OpenAI", true);

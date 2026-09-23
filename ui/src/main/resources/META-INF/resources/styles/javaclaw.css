@@ -1473,6 +1473,19 @@ body {
 }
 
 /*
+ * .jc-app manages its own internal scroll region (the transcript, between a pinned header and
+ * composer) and is deliberately not a scroll container itself. Settings has no pinned regions to
+ * keep still - it is one plain document - so unlike .jc-app it needs the overflow directly: without
+ * it, this flex child's default min-height:auto lets it grow past the shell's fixed 100dvh with
+ * nothing to scroll it back into view, which is indistinguishable from the page simply being cut off.
+ */
+.jc-main__content > .jc-settings {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+/*
  * The band is full bleed; its contents are not. Everything inside sits on .jc-measure, the same
  * primitive the transcript and the composer use, so there is one rule deciding the horizontal inset
  * instead of the two that used to disagree across a 127px band.
