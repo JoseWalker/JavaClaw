@@ -1,5 +1,6 @@
 package ai.javaclaw.onboarding.steps;
 
+import ai.javaclaw.llm.LlmProviderProperties;
 import ai.javaclaw.onboarding.AgentOnboardingProvider;
 import ai.javaclaw.onboarding.AgentOnboardingProvider.SystemWideToken;
 import ai.javaclaw.onboarding.AgentOnboardingProviders;
@@ -33,18 +34,27 @@ public class S3_CredentialsStep implements OnboardingProvider {
 
     @Override
     public void prepareModel(Map<String, Object> session, Map<String, Object> model) {
-        String providerId = (String) session.getOrDefault(S2_ProviderStep.SESSION_PROVIDER, env.getProperty("spring.ai.model.chat", ""));
+        String providerId = (String) session.getOrDefault(S2_ProviderStep.SESSION_PROVIDER, env.getProperty("agent.llm.providers.default.provider", ""));
         AgentOnboardingProvider provider = agentOnboardingProviders.findById(providerId).orElse(null);
         if (provider == null) return;
 
+        // Onboarding configures the single "default" provider under agent.llm.providers.default.
+        String base = "agent.llm.providers." + LlmProviderProperties.DEFAULT_PROVIDER_NAME;
+        String baseUrlKey = base + ".base-url";
+        String apiKeyKey = base + ".api-key";
+        String modelKey = base + ".model";
+
         String currentModel = (String) session.get(S2_ProviderStep.SESSION_MODEL);
-        String existingModel = env.getProperty(provider.createPropertyKey("chat.options.model"), "");
-        String existingApiKey = env.getProperty(provider.createPropertyKey("api-key"), "");
+        String existingBaseUrl = env.getProperty(baseUrlKey, "");
+        String existingApiKey = env.getProperty(apiKeyKey, "");
+        String existingModel = env.getProperty(modelKey, "");
         model.put("selectedProvider", provider.getId());
         model.put("providerLabel", provider.getLabel());
-        model.put("providerApiPropertyKey", provider.createPropertyKey("api-key"));
-        model.put("chatModelPropertyKey", provider.createPropertyKey("chat.options.model"));
+        model.put("baseUrlPropertyKey", baseUrlKey);
+        model.put("providerApiPropertyKey", apiKeyKey);
+        model.put("chatModelPropertyKey", modelKey);
         model.put("requiresApiKey", provider.requiresApiKey());
+        model.put("baseUrl", session.getOrDefault(S2_ProviderStep.SESSION_BASE_URL, existingBaseUrl));
         model.put("apiKey", session.getOrDefault(S2_ProviderStep.SESSION_API_KEY, existingApiKey));
         model.put("model", currentModel != null && !currentModel.isBlank() ? currentModel : (!existingModel.isBlank() ? existingModel : provider.defaultModel()));
         provider.systemWideToken().ifPresent(t -> model.put("systemWideTokenName", t.name()));
@@ -52,14 +62,15 @@ public class S3_CredentialsStep implements OnboardingProvider {
 
     @Override
     public String processStep(Map<String, String> formParams, Map<String, Object> session) {
-        String providerId = (String) session.getOrDefault(S2_ProviderStep.SESSION_PROVIDER, env.getProperty("spring.ai.model.chat", ""));
+        String providerId = (String) session.getOrDefault(S2_ProviderStep.SESSION_PROVIDER, env.getProperty("agent.llm.providers.default.provider", ""));
         AgentOnboardingProvider provider = agentOnboardingProviders.findById(providerId).orElse(null);
         if (provider == null) {
             return "Provider selection is missing. Please go back and select a provider.";
         }
 
-        String model = formParams.getOrDefault("model", "").trim();
+        String baseUrl = formParams.getOrDefault("baseUrl", "").trim();
         String apiKey = formParams.getOrDefault("apiKey", "").trim();
+        String model = formParams.getOrDefault("model", "").trim();
 
         if (model.isBlank()) {
             return "Enter a model to continue.";
@@ -77,13 +88,10 @@ public class S3_CredentialsStep implements OnboardingProvider {
             return "Enter an API key to continue.";
         }
 
-        session.put(S2_ProviderStep.SESSION_MODEL, model);
+        session.put(S2_ProviderStep.SESSION_BASE_URL, baseUrl);
         session.put(S2_ProviderStep.SESSION_API_KEY, apiKey);
+        session.put(S2_ProviderStep.SESSION_MODEL, model);
         return null;
     }
 
-    AgentOnboardingProvider getAgentProvider(Map<String, Object> session) {
-        String providerId = (String) session.getOrDefault(S2_ProviderStep.SESSION_PROVIDER, env.getProperty("spring.ai.model.chat", ""));
-        return agentOnboardingProviders.getById(providerId);
-    }
 }
