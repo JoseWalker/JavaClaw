@@ -1,0 +1,41 @@
+plugins {
+    id 'java-library'
+    alias(libs.plugins.vaadin)
+}
+
+dependencies {
+    implementation platform(libs.bom.vaadin)
+    implementation libs.vaadin.spring.boot.starter
+
+    implementation project(':base')
+    // base declares this as 'implementation', not 'api', so it never reaches ui's compile
+    // classpath transitively. ChatView (and the tests exercising it) import ChatModel,
+    // ChatResponse and the message types from spring-ai-client-chat directly, so ui has to
+    // redeclare it itself -- the same reason app/build.gradle already redeclares it too.
+    implementation 'org.springframework.ai:spring-ai-client-chat'
+
+    // No 'developmentOnly' block here: that configuration only exists where the Spring Boot
+    // Gradle plugin ('org.springframework.boot') is applied, and this module deliberately does
+    // not apply it -- ui is a plain library, not a second bootable application. The dev-tools
+    // dependency on the Vaadin dev server (libs.vaadin.dev) stays declared in app/build.gradle,
+    // the one module that has both a 'developmentOnly' configuration and a 'bootRun' task.
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+// ':ui:javadoc' runs at Gradle's default member level, "protected", so it never looks at a
+// private method, constructor or field. That makes it unable to observe most of what the coding
+// standard asks for: this module's chat.ui package is almost entirely private-method-heavy view
+// code, so a check that stays green while the property it exists to protect is broken is worse
+// than no check. This mirrors the 'strictJavadoc' task that used to live in app/build.gradle
+// before the UI code moved here with it.
+tasks.register('strictJavadoc', Javadoc) {
+    group = 'documentation'
+    description = 'Runs javadoc at PRIVATE member level, so private members are checked for documentation too.'
+    source = sourceSets.main.allJava
+    classpath = sourceSets.main.compileClasspath
+    destinationDir = layout.buildDirectory.dir('docs/strict-javadoc').get().asFile
+    options.memberLevel = JavadocMemberLevel.PRIVATE
+    options.addStringOption('Xmaxwarns', '10000')
+    options.addStringOption('Xmaxerrs', '10000')
+}
