@@ -136,26 +136,26 @@
     --jc-text-faint: light-dark(#6f6862, #8c8694);
 
     /* --- Accent --------------------------------------------------------- */
-    --jc-accent: light-dark(#a44c08, #e6924f);
-    --jc-accent-hover: light-dark(#8a3f05, #f2a76c);
-    --jc-accent-active: light-dark(#733404, #d98240);
+    --jc-accent: light-dark(#007564, #1affdd);
+    --jc-accent-hover: light-dark(#006152, #4dffe4);
+    --jc-accent-active: light-dark(#005245, #00e6c3);
     --jc-accent-contrast: light-dark(#ffffff, #1a1410);
     /*
      * Derived from the accent rather than hand-picked per theme, so the user turn carries the same
      * amount of brand in both. Hand-picked dark values drifted to 1.16:1 against the page ground,
-     * which made the tint vanish; mixing against --jc-surface-raised holds it at 1.66:1 over the
-     * ground and 1.49:1 over the raised tone in dark, and 1.33:1 / 1.38:1 in light.
+     * which made the tint vanish; mixing against --jc-surface-raised holds it at 2.00:1 over the
+     * ground and 1.80:1 over the raised tone in dark, and 1.32:1 / 1.38:1 in light.
      *
      * It is also a ground in its own right - the user's bubble and the selected conversation row
      * both sit on it - and the audit above originally skipped it, which is how four AA failures got
-     * onto the one row the column exists to draw attention to. Resolved, it is rgb(235,216,201) in
-     * light and rgb(76,56,47) in dark, and what may be painted on it is:
+     * onto the one row the column exists to draw attention to. Resolved, it is rgb(199,225,221) in
+     * light and rgb(31,80,78) in dark, and what may be painted on it is:
      *
-     *   --jc-text          12.53:1 light   9.08:1 dark   yes
-     *   --jc-accent-hover   5.44:1 light   5.50:1 dark   yes
-     *   --jc-accent         4.21:1 light   4.49:1 dark   no, and it is the row's time
-     *   --jc-text-muted     4.18:1 light   4.04:1 dark   no
-     *   --jc-text-faint     3.97:1 light   3.11:1 dark   no
+     *   --jc-text          12.56:1 light   7.50:1 dark   yes
+     *   --jc-accent-hover   5.39:1 light   7.23:1 dark   yes
+     *   --jc-accent         4.07:1 light   7.08:1 dark   no, and it is the row's time
+     *   --jc-text-muted     4.19:1 light   3.34:1 dark   no
+     *   --jc-text-faint     3.98:1 light   2.57:1 dark   no
      *
      * StylesheetClaimsTest recomputes every one of these from the tokens below, because this table
      * is a measurable claim and the last version of it was written from an audit that stopped one
@@ -177,8 +177,8 @@
      * recomputed from the tokens by StylesheetClaimsTest, for the same reason the accent-soft table
      * above them is - a contrast figure written into a comment and checked by nobody is how three
      * of this sheet's defects shipped:
-     *   --jc-text on soft-active     9.63:1 light   6.48:1 dark   the row's own label, needs 4.5
-     *   --jc-accent on soft-active   3.23:1 light   3.21:1 dark   the 2px rail, non-text, needs 3
+     *   --jc-text on soft-active     9.72:1 light   4.61:1 dark   the row's own label, needs 4.5
+     *   --jc-accent on soft-active   3.15:1 light   4.35:1 dark   the 2px rail, non-text, needs 3
      */
     --jc-accent-soft-hover: color-mix(in srgb, var(--jc-accent) 30%, var(--jc-surface-raised));
     --jc-accent-soft-active: color-mix(in srgb, var(--jc-accent) 38%, var(--jc-surface-raised));
@@ -188,7 +188,7 @@
      * Brand mark fill. Light is the accent as-is. Dark deepens it: at full saturation the mark is
      * the brightest object on the page and outweighs the product name it sits beside.
      */
-    --jc-mark-surface: light-dark(#a44c08, #c9773c);
+    --jc-mark-surface: light-dark(#007564, #00d6b6);
 
     --jc-danger: light-dark(#a52220, #f0a8a4);
 
@@ -288,7 +288,7 @@
      * is the only thing in the transcript that says an answer is still arriving; a floor the caret
      * spends half of every second at is not a value the reader can be assumed to look past.
      *
-     * 0.75 clears it with room: 3.46:1 in light and 4.68:1 in dark. It is still a visible step -
+     * 0.75 clears it with room: 3.39:1 in light and 8.32:1 in dark. It is still a visible step -
      * saturated ink dropping a quarter of its weight reads as a pulse - and the blink is what the
      * eye catches rather than the floor it reaches. StylesheetClaimsTest recomputes both figures
      * from the accent and the surface, so lightening either one fails there rather than in a
@@ -758,8 +758,8 @@ body {
 
 /*
  * The full accent rather than the 32% line, which is the same move .jc-starter:active makes and for
- * the same reason: at a 1px width the tinted mix is a hue with no contrast in it. 5.81:1 on the
- * button's fill and 5.06:1 on the rail in light, 6.68:1 and 7.80:1 in dark.
+ * the same reason: at a 1px width the tinted mix is a hue with no contrast in it. 5.61:1 on the
+ * button's fill and 5.38:1 on the rail in light, 12.75:1 and 14.17:1 in dark.
  */
 .jc-new-chat:active {
     transform: translateY(1px);
@@ -1080,9 +1080,9 @@ body {
 
 /*
  * --jc-accent-hover, not --jc-accent. The row's ground is --jc-accent-soft, and the accent itself
- * reaches only 4.21:1 against it in light and 4.49:1 in dark - under AA on the one row in the column
- * that is meant to be the easiest to read. The hover tone is the same hue two steps darker, which is
- * 5.44:1 and 5.50:1. See the audit at the token.
+ * reaches only 4.07:1 against it in light - under AA - and 7.08:1 in dark, on the one row in the
+ * column that is meant to be the easiest to read. The hover tone is the same hue at the next step
+ * of the ramp, which is 5.39:1 and 7.23:1. See the audit at the token.
  */
 .jc-conv[aria-current="true"] .jc-conv__time {
     color: var(--jc-accent-hover);
@@ -1092,7 +1092,7 @@ body {
  * A chat started but not yet spoken to.
  *
  * :not() is load-bearing, not decoration. Both selectors used to be able to match one row, and this
- * one is more specific, so a selected draft got a muted title on the tinted ground - 4.18:1, under
+ * one is more specific, so a selected draft got a muted title on the tinted ground - 4.19:1, under
  * AA - while the [aria-current] rule directly above it was trying to give that row the emphasis its
  * ground exists for. The selected row's own colour wins now, and what tells a draft apart is the
  * word "Draft" the row draws in place of a time.
