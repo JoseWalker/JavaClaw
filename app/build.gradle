@@ -2,13 +2,10 @@ plugins {
     id 'java-library'
     id 'org.springframework.boot'
     alias(libs.plugins.jib)
-    alias(libs.plugins.vaadin)
 }
 
 dependencies {
-    implementation platform(libs.bom.vaadin)
-    implementation libs.vaadin.spring.boot.starter
-
+    implementation project(':ui')
     implementation project(':base')
     implementation project(':providers:anthropic')
     implementation project(':providers:google')
@@ -29,14 +26,15 @@ dependencies {
     implementation(libs.pebble.spring.starter)
 
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
-    // The Vaadin BOM has to be imported a second time here. 'developmentOnly' does not extend
-    // 'implementation', so the `implementation platform(libs.bom.vaadin)` import at the top of this
-    // block never reaches it, and the versionless libs.vaadin.dev below then resolves to the empty
-    // version and fails :app:bootJar with "Could not find com.vaadin:vaadin-dev:". The root
-    // build.gradle re-imports the Spring Boot BOM onto this same configuration for the same reason.
-    // Declaring a version on the artifact instead resolves to the same graph today, so the argument
-    // for the BOM is not resolution but ownership: gradle/libs.versions.toml picks the Vaadin line
-    // once, and the plugin, the starter and the dev tools all have to move together on an upgrade.
+    // 'developmentOnly' is a configuration the Spring Boot Gradle plugin creates, and only this
+    // module applies that plugin -- the ':ui' module deliberately does not, since it is a plain
+    // library rather than a second bootable application, so this dev-mode-only Vaadin wiring
+    // cannot move there with the rest of the Vaadin declarations. The BOM has to be imported a
+    // second time here because 'developmentOnly' does not extend 'implementation', so ':ui''s own
+    // `implementation platform(libs.bom.vaadin)` never reaches it, and the versionless
+    // libs.vaadin.dev below would resolve to the empty version and fail :app:bootJar with "Could
+    // not find com.vaadin:vaadin-dev:". The root build.gradle re-imports the Spring Boot BOM onto
+    // this same configuration for the same reason.
     developmentOnly platform(libs.bom.vaadin)
     // Vaadin 25 no longer ships the dev tools transitively; without this artifact the servlet
     // context listener aborts startup with "'vaadin-dev-server' not found." and the whole
@@ -63,11 +61,13 @@ bootRun {
 
 // ':app:javadoc' runs at Gradle's default member level, "protected", so it never looks at a
 // private method, constructor or field. That makes it unable to observe most of what the coding
-// standard asks for: deleting every private docblock in ai.javaclaw.chat.ui leaves ':app:javadoc'
-// reporting exactly the same warning count, because at "protected" it generates pages for 11 of
-// that package's 37 types and skips the rest. A check that stays green while the property it
-// exists to protect is broken is worse than no check, so this task makes the strict measurement
+// standard asks for: deleting a private docblock anywhere in this module leaves ':app:javadoc'
+// reporting exactly the same warning count, because at "protected" it silently skips every
+// type that only exposes private members. A check that stays green while the property it exists
+// to protect is broken is worse than no check, so this task makes the strict measurement
 // reproducible from a clean clone with one command instead of a locally pasted init script.
+// (The Vaadin UI code this comment used to cite as the motivating example, ai.javaclaw.chat.ui,
+// moved to the ':ui' module, which registers the same 'strictJavadoc' task for the same reason.)
 //
 // It is registered as a separate task rather than folded into 'javadoc' deliberately. Raising the
 // member level on 'javadoc' itself would change the output of everybody's build and immediately
