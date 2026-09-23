@@ -122,8 +122,15 @@ class McpServersSection extends Div {
 
         addButton.addClassName("jc-settings__save");
 
-        Div form = new Div(nameField, typeField, urlField, headersField, commandField, argsField,
-                envField, addButton);
+        // Same grouping ProviderSection uses: fields as a grid, the submit action as its own row.
+        Div fields = new Div(nameField, typeField, urlField, headersField, commandField, argsField,
+                envField);
+        fields.addClassName("jc-settings__fields");
+
+        Div actions = new Div(addButton);
+        actions.addClassName("jc-settings__actions");
+
+        Div form = new Div(fields, actions);
         form.addClassName("jc-settings__mcp-form");
 
         add(new H2("MCP servers"),
@@ -374,6 +381,7 @@ class McpServersSection extends Div {
         Span label = new Span(name + " (" + type + ")");
         NativeButton remove = new NativeButton("Remove", event -> removeServer(server));
         remove.setAriaLabel("Remove " + name);
+        remove.addClassName("jc-settings__mcp-remove");
         Div row = new Div(label, remove);
         row.addClassName("jc-settings__mcp-row");
         return row;

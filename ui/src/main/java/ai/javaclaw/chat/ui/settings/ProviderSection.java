@@ -128,9 +128,17 @@ class ProviderSection extends Div {
         saveButton.addClassName("jc-settings__save");
         clearApiKeyButton.addClassName("jc-settings__clear-api-key");
 
+        // Grouped so the stylesheet can lay the four fields out as a responsive grid, and the two
+        // buttons as their own row, without reaching past this class into a flat list of siblings.
+        Div fields = new Div(providerField, modelField, baseUrlField, apiKeyField);
+        fields.addClassName("jc-settings__fields");
+
+        Div actions = new Div(clearApiKeyButton, saveButton);
+        actions.addClassName("jc-settings__actions");
+
         add(new H2("Provider & credentials"),
                 new Paragraph("The default model JavaClaw answers with, and the credentials it uses to reach it."),
-                providerField, modelField, baseUrlField, apiKeyField, clearApiKeyButton, saveButton);
+                fields, actions);
     }
 
     /**

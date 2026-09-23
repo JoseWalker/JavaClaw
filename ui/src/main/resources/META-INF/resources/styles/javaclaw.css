@@ -3854,3 +3854,199 @@ vaadin-button > .jc-glyph {
         transform: translateY(-50%);
     }
 }
+
+/*
+ * --- Settings --------------------------------------------------------------------
+ *
+ * A plain reading column, not a dashboard: every section here is one save action a reader visits
+ * rarely and leaves quickly, so it borrows the chat column's own --jc-measure and rhythm rather than
+ * a denser layout system this one page alone would use. Each concern (provider, AGENT.md, MCP
+ * servers) is its own raised card - --jc-surface-raised against --jc-surface is the same lift every
+ * dialog on this page's own popover already uses - so a reader can tell at a glance where one save
+ * ends and the next begins. That boundary matters more here than in most cards: two of the three
+ * sections can restart the running application on save, so the edge around a card is also the edge
+ * around what its button is about to affect.
+ */
+.jc-settings {
+    box-sizing: border-box;
+    width: 100%;
+    max-width: var(--jc-measure);
+    margin-inline: auto;
+    padding: var(--jc-space-xl) var(--jc-space-l) var(--jc-space-2xl);
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-xl);
+}
+
+.jc-settings > h1 {
+    margin: 0;
+    font-size: var(--jc-font-size-xl);
+    font-weight: var(--jc-font-weight-strong);
+    letter-spacing: var(--jc-tracking-tight);
+    color: var(--jc-text);
+}
+
+.jc-settings__section {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-m);
+    padding: var(--jc-space-l);
+    background: var(--jc-surface-raised);
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-l);
+    box-shadow: var(--jc-shadow-xs);
+}
+
+.jc-settings__section > h2 {
+    margin: 0;
+    font-size: var(--jc-font-size-l);
+    font-weight: var(--jc-font-weight-strong);
+    letter-spacing: var(--jc-tracking-tight);
+    color: var(--jc-text);
+}
+
+/* "Add a server", inside the MCP card - one step down from the card's own h2, not a second h2. */
+.jc-settings__section > h3 {
+    margin: 0;
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-strong);
+    letter-spacing: var(--jc-tracking-wide);
+    text-transform: uppercase;
+    color: var(--jc-text-faint);
+}
+
+/* The one line under each heading that says what the section is for; same voice as .jc-about. */
+.jc-settings__section > p {
+    margin: calc(-1 * var(--jc-space-xs)) 0 0;
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text-muted);
+}
+
+/*
+ * The field row. auto-fit with a wide minmax means a handful of short fields (provider, model) sit
+ * side by side on a normal window and stack on a narrow one with no breakpoint to maintain - the
+ * same reasoning the MCP add-form's seven fields need even more, since command/args/env are wider
+ * than a provider name.
+ */
+.jc-settings__fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+    gap: var(--jc-space-m);
+    align-items: end;
+}
+
+.jc-settings__fields > vaadin-select,
+.jc-settings__fields > vaadin-text-field,
+.jc-settings__fields > vaadin-password-field {
+    width: 100%;
+}
+
+/*
+ * Headers, arguments and environment variables are multi-line and read badly squeezed into one
+ * grid column's width next to a one-line field; give them the whole row rather than truncate every
+ * line the grid would otherwise wrap.
+ */
+.jc-settings__fields > vaadin-text-area {
+    grid-column: 1 / -1;
+    width: 100%;
+}
+
+.jc-settings__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--jc-space-s);
+}
+
+/*
+ * The save action on every section. --jc-accent rather than the neutral fill every other button on
+ * this page uses (.jc-settings__clear-api-key, .jc-settings__mcp-remove, .jc-dialog__close
+ * elsewhere): this is the one control that can restart the running application, and the neutral
+ * treatment would let it disappear next to fields that read as equally prominent.
+ */
+.jc-settings__save {
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-l);
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-accent-contrast);
+    background: var(--jc-accent);
+    border: 1px solid transparent;
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast);
+}
+
+.jc-settings__save:hover {
+    background: var(--jc-accent-hover);
+}
+
+.jc-settings__save:active {
+    background: var(--jc-accent-active);
+}
+
+/* A secondary, occasional action - same neutral chrome .jc-dialog__close uses elsewhere. */
+.jc-settings__clear-api-key {
+    margin: 0;
+    padding: var(--jc-space-2xs) var(--jc-space-m);
+    font-family: inherit;
+    font-size: var(--jc-font-size-s);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-text-muted);
+    background: var(--jc-surface-raised);
+    border: 1px solid var(--jc-border-control);
+    border-radius: var(--jc-radius-m);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), border-color var(--jc-transition-fast);
+}
+
+.jc-settings__clear-api-key:hover {
+    background: var(--jc-surface-sunken);
+    border-color: var(--jc-text-faint);
+}
+
+.jc-settings__mcp-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--jc-space-xs);
+}
+
+.jc-settings__mcp-row {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--jc-space-s);
+    padding: var(--jc-space-xs) var(--jc-space-s);
+    background: var(--jc-surface-sunken);
+    border: 1px solid var(--jc-border);
+    border-radius: var(--jc-radius-m);
+    font-size: var(--jc-font-size-s);
+    color: var(--jc-text);
+}
+
+.jc-settings__mcp-remove {
+    margin: 0;
+    padding: var(--jc-space-3xs) var(--jc-space-s);
+    font-family: inherit;
+    font-size: var(--jc-font-size-xs);
+    font-weight: var(--jc-font-weight-medium);
+    color: var(--jc-text-muted);
+    background: transparent;
+    border: 1px solid var(--jc-border-control);
+    border-radius: var(--jc-radius-s);
+    cursor: pointer;
+    transition: background-color var(--jc-transition-fast), color var(--jc-transition-fast);
+}
+
+.jc-settings__mcp-remove:hover {
+    background: var(--jc-surface-raised);
+    color: var(--jc-text);
+}
+
+/* Separates the add-form from the list above it - the list is what exists, the form is what's next. */
+.jc-settings__mcp-form {
+    padding-top: var(--jc-space-s);
+    border-top: 1px solid var(--jc-border);
+}

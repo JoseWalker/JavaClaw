@@ -57,9 +57,12 @@ class AgentInstructionsSection extends Div {
 
         saveButton.addClassName("jc-settings__save");
 
+        Div actions = new Div(saveButton);
+        actions.addClassName("jc-settings__actions");
+
         add(new H2("Agent instructions"),
                 new Paragraph("The system instructions the agent reads on every conversation."),
-                content, saveButton);
+                content, actions);
     }
 
     /**
