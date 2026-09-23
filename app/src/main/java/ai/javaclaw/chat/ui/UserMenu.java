@@ -12,26 +12,24 @@ import com.vaadin.flow.component.popover.PopoverPosition;
 import java.util.List;
 
 /**
- * The control at the foot of the sidebar: who is using the app, and what else it can do.
+ * The control at the foot of the sidebar: an icon-only trigger for the handful of shell-level
+ * actions that have nowhere better to live.
  *
- * <p>JavaClaw has no accounts, so this does not pretend to be an account switcher. It names the
- * session honestly and carries the handful of shell-level actions that have nowhere better to live.
- * Every item does something - a menu of greyed-out promises is worse than a shorter menu.
+ * <p>JavaClaw has no accounts, so this used to name the session instead - an avatar, "This
+ * session", "No account needed" - rather than pretend to be an account switcher. A reviewer looked
+ * at that row and asked for it to go: there is no account behind it and none planned yet, so it was
+ * a claim about identity nobody had asked to see, sitting in front of the three items that actually
+ * do something. The row is gone; what opens when the trigger is pressed is not, because that part
+ * was never in question. Every item in the panel still does something - a menu of greyed-out
+ * promises is worse than a shorter menu.
  *
- * <h2>Why the caption does not say where anything runs</h2>
+ * <h2>Why the trigger carries no text of its own</h2>
  *
- * <p>It used to read "Running on this machine", which this class had no way of knowing. The agent
- * runs here; the model may not, and on the install this was written against it did not - the bar
- * two hundred pixels away named a {@code -cloud} model at the same moment. A claim about locality is
- * also the one claim a reader of a self-hosted tool will act on, so getting it wrong is not a
- * cosmetic error: it is the chrome telling someone their conversation stayed on their own hardware
- * when it did not.
- *
- * <p>The same application ships a DRAFT badge so an unsaved thread cannot be mistaken for a saved
- * one, and refuses to print a modification time it did not observe. A hardcoded locality claim in
- * the one piece of chrome that is always on screen contradicts both. What is left is what this class
- * can actually verify from where it stands: there is no account, and the session belongs to this
- * browser. Where the model runs is stated once, by the bar, from configuration.
+ * <p>An icon-only control has no text node for a browser to compute an accessible name from, so
+ * the name has to be set explicitly rather than left to fall out of the markup. It is set to the
+ * same string the panel itself is labelled with, {@link #PANEL_LABEL}, so a reader who presses the
+ * trigger and a reader who lands inside the open panel are told the same thing about where they are
+ * - one string, not two that could drift apart.
  *
  * <h2>Why the panel is a popover and not a context menu</h2>
  *
@@ -67,11 +65,12 @@ class UserMenu extends Div {
     private static final String PANEL_WIDTH = "15.9375rem";
 
     /**
-     * What the panel is called out loud.
+     * What the panel is called out loud, and also the icon-only trigger's accessible name.
      *
      * <p>"Session actions" rather than "Session menu": it is not a menu any more, and a name that
      * says menu would put the word back in the reader's ear after the role was taken out of the
-     * tree.
+     * tree. Shared between the trigger and the panel it opens so the two cannot describe themselves
+     * differently.
      */
     private static final String PANEL_LABEL = "Session actions";
 
@@ -104,30 +103,27 @@ class UserMenu extends Div {
      * are fixed: there is no data to wait for, and a lazily built popover is a popover whose first
      * open is measurably slower and whose accessibility wiring has a window in which it is missing.
      *
+     * <p>The trigger itself carries only the disclosure chevron - no avatar, no session-identity
+     * text. That row was dropped on review (see the class Javadoc) because this application has no
+     * accounts to display; the panel it opens, and every item in it, is unchanged.
+     *
      * <p>Must run on the Vaadin UI thread, like any component construction that is about to be added
      * to a live layout.
      */
     UserMenu() {
         addClassName("jc-user");
 
-        Span avatar = Icons.glyph(Icons.PERSON);
-        avatar.addClassName("jc-user__avatar");
-
-        Span name = new Span("This session");
-        name.addClassName("jc-user__name");
-
-        Span caption = new Span("No account needed");
-        caption.addClassName("jc-user__caption");
-
-        Div text = new Div(name, caption);
-        text.addClassName("jc-user__text");
-
         Span chevron = Icons.glyph(Icons.CHEVRON_UP);
         chevron.addClassName("jc-user__chevron");
 
         NativeButton trigger = new NativeButton();
         trigger.addClassName("jc-user__trigger");
-        trigger.getElement().appendChild(avatar.getElement(), text.getElement(), chevron.getElement());
+        trigger.getElement().appendChild(chevron.getElement());
+        // No text node on an icon-only button for the browser to name it from, so the accessible
+        // name is set explicitly - and set to PANEL_LABEL rather than separate wording, so the
+        // trigger and the panel it opens are never one keystroke away from disagreeing about what
+        // this control is called.
+        trigger.setAriaLabel(PANEL_LABEL);
         // A disclosure, not a menu button: aria-expanded says something is open, which is the whole
         // of what this control promises. See the class note on why aria-haspopup="menu" is gone.
         trigger.getElement().setAttribute("aria-expanded", "false");

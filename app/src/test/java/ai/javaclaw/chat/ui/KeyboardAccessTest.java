@@ -453,6 +453,35 @@ class KeyboardAccessTest {
     }
 
     /**
+     * A reviewer liked this panel and asked only for the account-identity row the trigger used to
+     * show above it to go - an avatar, "This session", "No account needed" - because the
+     * application has no accounts behind that row. This pins the split: the trigger renders none of
+     * that text and still has a name a screen reader can announce, and the panel it opens still
+     * carries all three items unchanged.
+     */
+    @Test
+    @DisplayName("the session trigger dropped its identity row but kept its menu")
+    void theSessionTriggerIsIconOnly() {
+        UI ui = UiHarness.ui();
+        MainLayout shell = new MainLayout(new FakeDirectory(), new MockEnvironment());
+        ui.add(shell);
+
+        Element trigger = byClass(shell.getElement(), "jc-user__trigger");
+        assertThat(trigger.getTextRecursively()).doesNotContain("This session", "No account needed");
+        assertThat(trigger.getAttribute("aria-label")).isNotBlank();
+
+        // The popover attaches itself to the UI on target attach rather than nesting under the
+        // trigger it targets - the same reason the test above reads "jc-menu" from the shell's
+        // aria-expanded neighbour rather than from inside it.
+        Element panel = byClass(ui.getElement(), "jc-menu");
+        List<String> items = descendants(panel)
+                .filter(element -> element.getClassList().contains("jc-menu__item"))
+                .map(Element::getTextRecursively)
+                .toList();
+        assertThat(items).containsExactly("Keyboard shortcuts", "Open the classic chat", "About JavaClaw");
+    }
+
+    /**
      * Opened from the user menu, Escape dropped focus on the body: the control that opened the
      * dialog was a menu item, and the menu item had been destroyed with the menu, so the browser's
      * own restore target no longer existed. Opened with Ctrl/Cmd + / the same dialog returned focus
